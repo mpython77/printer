@@ -1597,44 +1597,57 @@
                 : job.payment_status === "EXPIRED"
                   ? `<span class="tag-pill pay-pill is-unverified">⌛ Vaqt tugagan</span>`
                   : "";
+        const duplexTxt = job.duplex === "duplex" ? " • 2 tomonlama" : "";
+        const deviceTxt = job.device_label || job.device_id || "Noma'lum";
         return `
         <div class="queue-item">
           <div class="queue-item-main">
-            <h4>${escapeHtml(job.original_filename)} <span class="version-pill">${escapeHtml(job.id)}</span></h4>
-            <div class="queue-meta">
-              <span class="tag-pill">${escapeHtml(formatDateTime(job.created_at))}</span>
-              <span class="tag-pill">O'quvchi: ${escapeHtml(job.student_name || "Ko'rsatilmagan")}</span>
-              <span class="tag-pill">Qurilma: ${escapeHtml(job.device_label || job.device_id || "Noma'lum")} (${escapeHtml(job.client_ip || "local")})</span>
-              <span class="tag-pill">🖨️ Printer: ${escapeHtml(job.printer_name || job.printer_mode)}</span>
-              <span class="tag-pill">Betlar: ${escapeHtml(job.page_range_text)} (${job.selected_page_count} bet)</span>
-              <span class="tag-pill">${job.copies} nusxa • ${escapeHtml(jobColorLabel)}${job.duplex === "duplex" ? " • 2 tomonlama" : ""} • ${job.pages_per_sheet}x</span>
-              <span class="tag-pill">${job.physical_sheets} varaq</span>
-              <span class="tag-pill">Vaqt: ${escapeHtml(formatDuration(job.estimated_seconds))}</span>
-              <span class="tag-pill">${formatMoney(job.estimated_cost)}</span>
-              ${payTag}
+            <div class="queue-item-title">
+              <span class="queue-item-file" title="${escapeHtml(job.original_filename)}">${escapeHtml(job.original_filename)}</span>
+              <span class="version-pill">#${escapeHtml(job.id)}</span>
+            </div>
+            <div class="queue-item-line">
+              <span>👤 ${escapeHtml(job.student_name || "Ko'rsatilmagan")}</span>
+              <span>${escapeHtml(deviceTxt)} (${escapeHtml(job.client_ip || "local")})</span>
+              <span>🕒 ${escapeHtml(formatDateTime(job.created_at))}</span>
+            </div>
+            <div class="queue-item-line queue-item-line--strong">
+              <span>Betlar: ${escapeHtml(job.page_range_text)} (${job.selected_page_count} bet)</span>
+              <span>${job.copies} nusxa • ${escapeHtml(jobColorLabel)}${duplexTxt}</span>
+              <span>${job.physical_sheets} varaq</span>
+              <span>${escapeHtml(formatDuration(job.estimated_seconds))}</span>
+              <span class="queue-item-cost">${formatMoney(job.estimated_cost)}</span>
+            </div>
+            <div class="queue-item-line">
+              <span>🖨️ ${escapeHtml(job.printer_name || job.printer_mode)}</span>
             </div>
             ${job.payment_note ? `<div class="payment-note-line">${escapeHtml(job.payment_note)}</div>` : ""}
           </div>
-          <div class="queue-item-actions">
-            <span class="status-tag ${badge.cls}">${badge.label}</span>
-            ${
-              job.has_receipt
-                ? `<a href="${escapeHtml(SmartPrintApi.getReceiptUrl(job.id))}" target="_blank" rel="noopener" class="btn btn-secondary btn-sm">🧾 To'lov cheki</a>`
-                : ""
-            }
-            ${
-              job.queue_state === "AWAITING_PAYMENT"
-                ? `<button type="button" class="btn btn-success btn-sm admin-approve-payment-btn" data-job-id="${escapeHtml(job.id)}">💳 To'lovni tasdiqlash</button>`
-                : ""
-            }
-            <a href="${job.pdf_url}" target="_blank" rel="noopener" class="btn btn-primary btn-sm">Tayyor PDF</a>
-            <a href="${job.original_pdf_url}" target="_blank" rel="noopener" class="btn btn-secondary btn-sm">Asl PDF</a>
-            ${
-              job.status !== "COMPLETED"
-                ? `<button type="button" class="btn btn-secondary btn-sm admin-complete-btn" data-job-id="${escapeHtml(job.id)}">Chop etildi</button>`
-                : ""
-            }
-            <button type="button" class="btn btn-ghost btn-sm admin-delete-btn" data-job-id="${escapeHtml(job.id)}">O'chirish</button>
+          <div class="queue-item-side">
+            <div class="queue-item-badges">
+              <span class="status-tag ${badge.cls}">${badge.label}</span>
+              ${job.status === "AWAITING_PAYMENT" && job.payment_status === "AWAITING_PAYMENT" ? "" : payTag}
+            </div>
+            <div class="queue-item-actions">
+              ${
+                job.queue_state === "AWAITING_PAYMENT"
+                  ? `<button type="button" class="btn btn-success btn-sm admin-approve-payment-btn" data-job-id="${escapeHtml(job.id)}">💳 To'lovni tasdiqlash</button>`
+                  : ""
+              }
+              ${
+                job.status !== "COMPLETED"
+                  ? `<button type="button" class="btn btn-secondary btn-sm admin-complete-btn" data-job-id="${escapeHtml(job.id)}">Chop etildi</button>`
+                  : ""
+              }
+              <a href="${job.pdf_url}" target="_blank" rel="noopener" class="btn btn-outline btn-sm">Tayyor PDF</a>
+              <a href="${job.original_pdf_url}" target="_blank" rel="noopener" class="btn btn-outline btn-sm">Asl PDF</a>
+              ${
+                job.has_receipt
+                  ? `<a href="${escapeHtml(SmartPrintApi.getReceiptUrl(job.id))}" target="_blank" rel="noopener" class="btn btn-outline btn-sm">🧾 Chek</a>`
+                  : ""
+              }
+              <button type="button" class="btn btn-ghost btn-sm admin-delete-btn" data-job-id="${escapeHtml(job.id)}">O'chirish</button>
+            </div>
           </div>
         </div>
       `;
@@ -2135,16 +2148,15 @@
       el.mobilePrintSubmitBtn.addEventListener("click", submitPrintJob);
     }
 
-    // Admin Section Filter Tabs
-    document.querySelectorAll(".admin-section-tab[data-admin-tab]").forEach((tabBtn) => {
+    // Admin side navigation (one section visible at a time)
+    document.querySelectorAll(".admin-nav-btn[data-admin-tab]").forEach((tabBtn) => {
       tabBtn.addEventListener("click", () => {
-        const target = tabBtn.getAttribute("data-admin-tab") || "all";
-        document.querySelectorAll(".admin-section-tab[data-admin-tab]").forEach((b) => {
+        const target = tabBtn.getAttribute("data-admin-tab");
+        document.querySelectorAll(".admin-nav-btn[data-admin-tab]").forEach((b) => {
           b.classList.toggle("is-active", b === tabBtn);
         });
-        document.querySelectorAll("#adminView [data-admin-section]").forEach((sec) => {
-          const secName = sec.getAttribute("data-admin-section");
-          sec.classList.toggle("hidden", target !== "all" && secName !== target);
+        document.querySelectorAll("#adminView [data-admin-panel]").forEach((panel) => {
+          panel.classList.toggle("hidden", panel.getAttribute("data-admin-panel") !== target);
         });
       });
     });

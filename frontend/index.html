@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>TLG SmartPrint — 1:1 Aqlli Chop Etish Studiyasi</title>
+  <title>TLG SmartPrint</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;600;700&display=swap" rel="stylesheet">
@@ -24,9 +24,8 @@
         <div class="brand-copy">
           <div class="brand-title-row">
             <span class="brand-title">TLG SmartPrint</span>
-            <span class="version-pill">STUDIO 3.0</span>
           </div>
-          <span class="brand-subtitle">1:1 aniqlikdagi o'z-o'ziga xizmat ko'rsatish terminali</span>
+          <span class="brand-subtitle">Chop etish terminali</span>
         </div>
       </div>
 
@@ -123,11 +122,6 @@
               hidden
             />
 
-            <div class="upload-badge-top">
-              <span class="pulse-dot-emerald"></span>
-              <span>1:1 Asl ko'rinishda (Rasm, Jadval va Slaydlar buzilmaydi)</span>
-            </div>
-
             <div class="upload-icon-cluster" aria-hidden="true">
               <span class="file-chip chip-pdf">PDF</span>
               <div class="drop-zone-icon">
@@ -142,8 +136,7 @@
 
             <h1 class="upload-hero-title">Hujjatni shu yerga tashlang yoki tanlang</h1>
             <p class="drop-zone-sub">
-              Hujjatingiz avtomatik 1:1 sifatda tayyorlanadi. Har bir betni ko'rib, kerakli sahifalarni,
-              <strong>Oq-qora</strong> yoki <strong>Rangli</strong> rejimni o'zingiz belgilaysiz.
+              PDF, Word, PowerPoint, Excel yoki rasm yuklang va kerakli sahifalarni tanlang.
             </p>
 
             <div class="drop-zone-actions">
@@ -175,7 +168,7 @@
 
             <div id="uploadLoader" class="upload-loader hidden">
               <div class="spinner"></div>
-              <p id="uploadLoaderText">Hujjat yuklanmoqda va 1:1 betlarga ajratilmoqda...</p>
+              <p id="uploadLoaderText">Hujjat yuklanmoqda va betlarga ajratilmoqda...</p>
             </div>
           </div>
 
@@ -207,27 +200,27 @@
             </div>
 
             <div class="info-card steps-overview-card">
-              <div class="info-card-kicker">QANDAY ISHLAYDI? (3 QADAM)</div>
+              <div class="info-card-kicker">QANDAY ISHLAYDI?</div>
               <ol class="kiosk-steps-list">
                 <li>
                   <span class="kiosk-step-num">1</span>
                   <div>
                     <strong>Faylni yuklang</strong>
-                    <p>PDF, Word, PowerPoint, Excel yoki rasm — barchasi avtomatik 1:1 qabul qilinadi.</p>
+                    <p>PDF, Word, PowerPoint, Excel yoki rasm faylini tanlang.</p>
                   </div>
                 </li>
                 <li>
                   <span class="kiosk-step-num">2</span>
                   <div>
                     <strong>Sahifalar va rangni belgilang</strong>
-                    <p>Har bir betni ko'rib chiqing, toq/juft yoki kerakli betlarni va rang rejimini tanlang.</p>
+                    <p>Kerakli betlarni va oq-qora yoki rangli rejimni tanlang.</p>
                   </div>
                 </li>
                 <li>
                   <span class="kiosk-step-num">3</span>
                   <div>
                     <strong>Chiqarish tugmasini bosing</strong>
-                    <p>Aniq hisob-kitobni ko'rib, bir zumda printerdan tayyor qog'ozni oling.</p>
+                    <p>Narxni tekshirib, chop etishga yuboring.</p>
                   </div>
                 </li>
               </ol>
@@ -522,333 +515,270 @@
 
     <!-- ==================== VIEW 2: PROTECTED ADMIN PANEL ==================== -->
     <section id="adminView" class="view-section">
-      <div class="admin-header-bar">
+      <div class="admin-topline">
         <div>
-          <h2>Admin Boshqaruv Paneli</h2>
-          <p class="admin-sub">Tariflar, printer rejimi, HUMO to'lovlar va barcha chop etish buyurtmalari</p>
+          <h2 class="admin-title">Admin panel</h2>
+          <p class="admin-sub">Buyurtmalar, narxlar, printer va to'lov sozlamalari</p>
         </div>
-        <div class="admin-header-actions">
-          <div class="admin-section-tabs" role="tablist" aria-label="Admin bo'limlari">
-            <button type="button" class="admin-section-tab is-active" data-admin-tab="all">Barchasi</button>
-            <button type="button" class="admin-section-tab" data-admin-tab="orders">Buyurtmalar</button>
-            <button type="button" class="admin-section-tab" data-admin-tab="settings">Printer va Tariflar</button>
-            <button type="button" class="admin-section-tab" data-admin-tab="integrations">HUMO va Telegram</button>
-          </div>
+        <div class="admin-topline-actions">
           <span class="admin-user-pill">Admin: <strong id="adminCurrentUsernameLabel">admin</strong></span>
           <button type="button" id="adminRefreshBtn" class="btn btn-secondary btn-sm">↻ Yangilash</button>
         </div>
       </div>
 
-      <!-- KPI Statistics Cards -->
       <div class="admin-kpi-grid">
         <div class="kpi-card">
-          <span class="kpi-label">Jami buyurtmalar</span>
+          <span class="kpi-label">Buyurtmalar</span>
           <strong class="kpi-value" id="statTotalJobs">0</strong>
           <span class="kpi-sub" id="statJobsToday">Bugun: 0 ta</span>
         </div>
         <div class="kpi-card">
           <span class="kpi-label">Chiqarilgan betlar</span>
           <strong class="kpi-value" id="statTotalPages">0</strong>
-          <span class="kpi-sub">Tanlangan betlar jami</span>
+          <span class="kpi-sub">Nusxalar bilan birga</span>
         </div>
         <div class="kpi-card">
           <span class="kpi-label">Sarflangan qog'oz</span>
           <strong class="kpi-value" id="statTotalSheets">0</strong>
-          <span class="kpi-sub">Fizik A4 / Letter varaqlar</span>
+          <span class="kpi-sub">Varaqlar soni</span>
         </div>
         <div class="kpi-card kpi-card--highlight">
           <span class="kpi-label">Jami tushum</span>
           <strong class="kpi-value" id="statTotalRevenue">0 so'm</strong>
-          <span class="kpi-sub">Hisoblangan umumiy qiymat</span>
+          <span class="kpi-sub">Barcha buyurtmalar bo'yicha</span>
         </div>
       </div>
 
-      <!-- Orders Queue Card (Placed right under KPIs for immediate operational visibility) -->
-      <div class="card admin-card admin-queue-card" data-admin-section="orders" style="margin-bottom: 1.25rem;">
-        <div class="admin-queue-header">
-          <div>
-            <h3>📋 Chop etish navbati va tarixi</h3>
-            <p class="card-desc" style="margin-bottom:0">Barcha yuborilgan fayllar, kesilgan PDF nusxalari va holatlar</p>
-          </div>
-          <div class="admin-queue-filters">
-            <input
-              id="adminJobSearchInput"
-              type="text"
-              class="text-input search-input"
-              placeholder="Ism, fayl nomi yoki ID..."
-            />
-            <select id="adminJobStatusFilter" class="select-input status-filter-select">
-              <option value="all">Barcha holatlar</option>
-              <option value="awaiting_payment">To'lov kutilmoqda</option>
-              <option value="completed">Bajarilgan</option>
-              <option value="DRY_RUN">Sinov (Dry-run)</option>
-              <option value="AGENT_QUEUED">Pi navbatida</option>
-              <option value="failed">Xatolik</option>
-            </select>
-            <button type="button" id="adminClearJobsBtn" class="btn btn-danger-outline btn-sm">
-              Tarixni tozalash
-            </button>
-          </div>
-        </div>
-
-        <div id="adminJobsList" class="queue-list"></div>
-      </div>
-
-      <!-- Admin Configuration Grid -->
-      <div class="admin-grid">
-        <!-- 1. Pricing Settings Card -->
-        <div class="card admin-card" data-admin-section="settings">
-          <h3>💰 Narxlar va tezlik sozlamalari</h3>
-          <p class="card-desc">Har bir fizik varaq uchun narx (so'mda) va 1 varaq chiqarish vaqti</p>
-
-          <div class="form-row-2">
-            <div class="form-group">
-              <label for="priceBwSimplexInput" class="form-label">Oq-qora (1 tomonlama)</label>
-              <input id="priceBwSimplexInput" type="number" min="0" step="50" class="text-input" />
-            </div>
-            <div class="form-group">
-              <label for="priceBwDuplexInput" class="form-label">Oq-qora (2 tomonlama)</label>
-              <input id="priceBwDuplexInput" type="number" min="0" step="50" class="text-input" />
-            </div>
-          </div>
-
-          <div class="form-row-2">
-            <div class="form-group">
-              <label for="priceColorSimplexInput" class="form-label">Rangli (1 tomonlama)</label>
-              <input id="priceColorSimplexInput" type="number" min="0" step="50" class="text-input" />
-            </div>
-            <div class="form-group">
-              <label for="priceColorDuplexInput" class="form-label">Rangli (2 tomonlama)</label>
-              <input id="priceColorDuplexInput" type="number" min="0" step="50" class="text-input" />
-            </div>
-          </div>
-
-          <div class="form-row-2">
-            <div class="form-group">
-              <label for="secondsBwInput" class="form-label">Oq-qora tezlik (soniya/varaq)</label>
-              <input id="secondsBwInput" type="number" min="1" max="60" class="text-input" />
-            </div>
-            <div class="form-group">
-              <label for="secondsColorInput" class="form-label">Rangli tezlik (soniya/varaq)</label>
-              <input id="secondsColorInput" type="number" min="1" max="120" class="text-input" />
-            </div>
-          </div>
-
-          <button type="button" id="savePricingBtn" class="btn btn-primary full-width">
-            💾 Narxlarni saqlash
+      <div class="admin-layout">
+        <nav class="admin-sidenav" aria-label="Admin bo'limlari">
+          <button type="button" class="admin-nav-btn is-active" data-admin-tab="orders">
+            <span class="admin-nav-icon">📋</span>
+            <span>Buyurtmalar</span>
           </button>
-        </div>
-
-        <!-- 2. Printer & Raspberry Pi Mode Card -->
-        <div class="card admin-card" data-admin-section="settings">
-          <h3>🖨️ Printer va Raspberry Pi rejimi</h3>
-          <p class="card-desc">Mahalliy printer, Test rejimi yoki Raspberry Pi print-server boshqaruvi</p>
-
-          <div class="form-group">
-            <label for="adminPrinterModeSelect" class="form-label">Chop etish rejimi</label>
-            <select id="adminPrinterModeSelect" class="select-input">
-              <option value="auto">Avtomatik (Printer bo'lsa haqiqiy, bo'lmasa Test)</option>
-              <option value="dry_run">Faqat Test / Simulyatsiya (Qog'oz chiqarmasdan sinash)</option>
-              <option value="local">Mahalliy USB / Tarmoq printer (CUPS / Windows)</option>
-              <option value="pi_agent">Raspberry Pi Agent navbati (Masofaviy Pi)</option>
-            </select>
-          </div>
-
-          <div class="form-group">
-            <label for="adminDefaultPrinterSelect" class="form-label">Asosiy printer</label>
-            <select id="adminDefaultPrinterSelect" class="select-input">
-              <option value="">Avtomatik aniqlash</option>
-            </select>
-          </div>
-
-          <div class="form-group">
-            <label for="adminAgentKeyInput" class="form-label">Raspberry Pi Agent maxfiy kaliti (X-Agent-Key)</label>
-            <input id="adminAgentKeyInput" type="text" class="text-input" placeholder="Masalan: tlg-pi-secret-2026" autocomplete="off" />
-          </div>
-
-          <div id="piAgentStatusBox" class="agent-status-box"></div>
-          <div id="adminPrintersList" class="admin-printers-mini"></div>
-
-          <button type="button" id="savePrinterSettingsBtn" class="btn btn-primary full-width">
-            💾 Printer sozlamalarini saqlash
+          <button type="button" class="admin-nav-btn" data-admin-tab="pricing">
+            <span class="admin-nav-icon">💰</span>
+            <span>Narxlar</span>
           </button>
-        </div>
+          <button type="button" class="admin-nav-btn" data-admin-tab="printer">
+            <span class="admin-nav-icon">🖨️</span>
+            <span>Printer</span>
+          </button>
+          <button type="button" class="admin-nav-btn" data-admin-tab="payment">
+            <span class="admin-nav-icon">💳</span>
+            <span>To'lov va Telegram</span>
+          </button>
+          <button type="button" class="admin-nav-btn" data-admin-tab="security">
+            <span class="admin-nav-icon">🔐</span>
+            <span>Xavfsizlik</span>
+          </button>
+        </nav>
 
-        <!-- 3. HUMO Card & Telegram Userbot Live Payment Verification Card -->
-        <div class="card admin-card admin-card--wide" data-admin-section="integrations">
-          <div class="card-head-inline">
-            <div>
-              <h3>💳 HUMO Karta va Telegram Avto-To'lov (@HUMOcardbot)</h3>
-              <p class="card-desc">
-                Talaba ko'rsatilgan aniq summani kartangizga o'tkazishi bilan Telegram hisobingizga kelgan
-                <strong>@HUMOcardbot</strong> xabari avtomatik o'qiladi va hujjat darhol printerdan chiqadi.
+        <div class="admin-content">
+          <!-- ORDERS -->
+          <div class="card admin-panel" data-admin-panel="orders">
+            <div class="admin-panel-head">
+              <div>
+                <h3>Buyurtmalar</h3>
+                <p class="card-desc">Yuborilgan hujjatlar, to'lov holati va tayyor PDF fayllar</p>
+              </div>
+              <div class="admin-queue-filters">
+                <input id="adminJobSearchInput" type="search" class="text-input search-input" placeholder="Ism, fayl yoki ID bo'yicha qidirish..." />
+                <select id="adminJobStatusFilter" class="select-input status-filter-select">
+                  <option value="ALL">Barcha holatlar</option>
+                  <option value="AWAITING_PAYMENT">To'lov kutilmoqda</option>
+                  <option value="WAITING_IN_QUEUE">Kutish navbatida</option>
+                  <option value="READY_IN_QUEUE">Faol chop etishda / Test</option>
+                  <option value="QUEUED_FOR_AGENT">Pi navbatida</option>
+                  <option value="PRINTING_ON_PI">Raspberry Pi chop etmoqda</option>
+                  <option value="SENT_TO_PRINTER">Printerga yuborilgan</option>
+                  <option value="COMPLETED">Chop etilgan</option>
+                  <option value="ERROR">Xatolik</option>
+                  <option value="CANCELLED">Bekor qilingan</option>
+                </select>
+                <button type="button" id="adminClearJobsBtn" class="btn btn-danger-outline btn-sm">Tarixni tozalash</button>
+              </div>
+            </div>
+            <div id="adminJobsList" class="queue-list"></div>
+          </div>
+
+          <!-- PRICING -->
+          <div class="card admin-panel hidden" data-admin-panel="pricing">
+            <div class="admin-panel-head">
+              <div>
+                <h3>Narxlar va chiqish vaqti</h3>
+                <p class="card-desc">O'zgarishlar o'quvchi sahifasida darhol amal qiladi</p>
+              </div>
+            </div>
+
+            <div class="admin-section-label">Narx (1 varaq uchun, so'm)</div>
+            <div class="form-row-2">
+              <div class="form-group">
+                <label class="form-label" for="priceBwSimplexInput">Oq-qora</label>
+                <input id="priceBwSimplexInput" type="number" min="0" step="50" class="text-input" />
+              </div>
+              <div class="form-group">
+                <label class="form-label" for="priceColorSimplexInput">Rangli</label>
+                <input id="priceColorSimplexInput" type="number" min="0" step="50" class="text-input" />
+              </div>
+            </div>
+            <div class="form-group hidden">
+              <input id="priceBwDuplexInput" type="number" min="0" step="50" />
+              <input id="priceColorDuplexInput" type="number" min="0" step="50" />
+            </div>
+
+            <div class="admin-section-label">Chiqish vaqti (1 varaq uchun, soniya)</div>
+            <div class="form-row-2">
+              <div class="form-group">
+                <label class="form-label" for="secondsBwInput">Oq-qora</label>
+                <input id="secondsBwInput" type="number" min="1" max="300" step="1" class="text-input" />
+              </div>
+              <div class="form-group">
+                <label class="form-label" for="secondsColorInput">Rangli</label>
+                <input id="secondsColorInput" type="number" min="1" max="300" step="1" class="text-input" />
+              </div>
+            </div>
+
+            <button type="button" id="savePricingBtn" class="btn btn-primary">Narx va vaqtni saqlash</button>
+          </div>
+
+          <!-- PRINTER -->
+          <div class="card admin-panel hidden" data-admin-panel="printer">
+            <div class="admin-panel-head">
+              <div>
+                <h3>Printer va ish rejimi</h3>
+                <p class="card-desc">Printer ulangach rejimni jonli holatga o'tkazing</p>
+              </div>
+            </div>
+
+            <div class="form-group">
+              <label class="form-label" for="adminPrinterModeSelect">Chop etish rejimi</label>
+              <select id="adminPrinterModeSelect" class="select-input">
+                <option value="DRY_RUN">Test rejimi — qog'oz chiqmaydi, faqat PDF tayyorlanadi</option>
+                <option value="LINUX_CUPS">Linux / Raspberry Pi CUPS — to'g'ridan-to'g'ri printer</option>
+                <option value="REMOTE_AGENT">Raspberry Pi ko'prigi — uzoqdan chop etish</option>
+                <option value="WINDOWS_SPOOLER">Windows Spooler — mahalliy Windows printeri</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="adminDefaultPrinterSelect">Asosiy printer</label>
+              <select id="adminDefaultPrinterSelect" class="select-input">
+                <option value="">Avtomatik (standart printer)</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="adminAgentKeyInput">Raspberry Pi Agent kaliti (X-Agent-Key)</label>
+              <input id="adminAgentKeyInput" type="text" class="text-input" placeholder="Masalan: tlg-pi-secret-2026" autocomplete="off" />
+            </div>
+            <div id="piAgentStatusBox" class="agent-status-box"></div>
+            <div id="adminPrintersList" class="admin-printers-mini"></div>
+
+            <button type="button" id="savePrinterSettingsBtn" class="btn btn-primary">Printer sozlamalarini saqlash</button>
+          </div>
+
+          <!-- PAYMENT + TELEGRAM -->
+          <div class="card admin-panel hidden" data-admin-panel="payment">
+            <div class="admin-panel-head">
+              <div>
+                <h3>To'lov va Telegram</h3>
+                <p class="card-desc">O'quvchi kartaga to'laydi, @HUMOcardbot xabari orqali to'lov avtomatik tasdiqlanadi</p>
+              </div>
+              <span id="adminTelegramStatusBadge" class="status-pill status-neutral">Tekshirilmoqda...</span>
+            </div>
+
+            <div class="admin-section-label">1. Karta sozlamalari</div>
+            <label class="toggle-switch-row" for="paymentEnabledInput">
+              <input id="paymentEnabledInput" type="checkbox" checked />
+              <span><strong>To'lov tizimi yoqilgan</strong> — chop etishdan oldin karta to'lovi talab qilinadi</span>
+            </label>
+            <div class="form-row-2">
+              <div class="form-group">
+                <label class="form-label" for="paymentCardNumberInput">HUMO karta raqami</label>
+                <input id="paymentCardNumberInput" type="text" class="text-input" placeholder="9860 3501 2345 5728" autocomplete="off" />
+              </div>
+              <div class="form-group">
+                <label class="form-label" for="paymentCardHolderInput">Karta egasi</label>
+                <input id="paymentCardHolderInput" type="text" class="text-input" placeholder="DIYORBEK" autocomplete="off" />
+              </div>
+              <div class="form-group">
+                <label class="form-label" for="telegramBotUsernameInput">Telegram bot manzili</label>
+                <input id="telegramBotUsernameInput" type="text" class="text-input" value="https://t.me/HUMOcardbot" placeholder="https://t.me/HUMOcardbot" autocomplete="off" />
+              </div>
+              <div class="form-group">
+                <label class="form-label" for="paymentWindowSecondsInput">To'lov vaqti (soniya)</label>
+                <input id="paymentWindowSecondsInput" type="number" min="30" max="900" class="text-input" value="120" />
+              </div>
+            </div>
+            <button type="button" id="savePaymentSettingsBtn" class="btn btn-primary">Karta va to'lov sozlamalarini saqlash</button>
+
+            <hr class="admin-divider" />
+
+            <div class="admin-section-label">2. Telegram hisobni ulash</div>
+            <div class="telegram-auth-box" id="adminTelegramAuthBox">
+              <div class="tg-box-head">
+                <strong>Telegram akkaunt</strong>
+                <button type="button" id="telegramDisconnectBtn" class="btn btn-danger-outline btn-xs hidden">Hisobni uzish</button>
+              </div>
+              <p class="tg-box-sub" id="adminTelegramAccountDetails">
+                Akkaunt ulansa, sayt bot xabarlarini real vaqtda o'qiydi.
               </p>
-            </div>
-            <span id="adminTelegramStatusBadge" class="status-pill status-neutral">Tekshirilmoqda...</span>
-          </div>
-
-          <div class="admin-payment-grid">
-            <!-- Left: Card & Window Settings -->
-            <div class="admin-payment-col">
-              <label class="toggle-switch-row">
-                <input id="paymentEnabledInput" type="checkbox" checked />
-                <span><strong>Chop etishdan oldin HUMO to'lov talab qilinsin</strong></span>
-              </label>
-
-              <div class="form-group">
-                <label for="paymentCardNumberInput" class="form-label">HUMO karta raqamingiz</label>
-                <input
-                  id="paymentCardNumberInput"
-                  type="text"
-                  class="text-input"
-                  placeholder="9860 3501 2345 5728"
-                  autocomplete="off"
-                />
+              <div class="input-with-btn">
+                <input id="telegramPhoneInput" type="text" class="text-input" placeholder="+998901234567" autocomplete="tel" />
+                <button type="button" id="telegramSendCodeBtn" class="btn btn-secondary btn-sm">Kod yuborish</button>
               </div>
-
-              <div class="form-row-2">
-                <div class="form-group">
-                  <label for="paymentCardHolderInput" class="form-label">Karta egasi ismi</label>
-                  <input
-                    id="paymentCardHolderInput"
-                    type="text"
-                    class="text-input"
-                    placeholder="DIYORBEK"
-                    autocomplete="off"
-                  />
-                </div>
-                <div class="form-group">
-                  <label for="telegramBotUsernameInput" class="form-label">HUMO bot manzili</label>
-                  <input
-                    id="telegramBotUsernameInput"
-                    type="text"
-                    class="text-input"
-                    value="https://t.me/HUMOcardbot"
-                    placeholder="https://t.me/HUMOcardbot"
-                    autocomplete="off"
-                  />
-                </div>
-              </div>
-
-              <div class="form-group">
-                <label for="paymentWindowSecondsInput" class="form-label">
-                  To'lov kutish vaqti (soniya, standart: 120s = 2 daqiqa)
-                </label>
-                <input
-                  id="paymentWindowSecondsInput"
-                  type="number"
-                  min="30"
-                  max="900"
-                  class="text-input"
-                  value="120"
-                />
-                <span class="mixed-hint">
-                  Har bir buyurtmaga +1..+99 so'm unikal qo'shimcha beriladi va shu vaqt ichida @HUMOcardbot xabari tekshiriladi.
-                </span>
-              </div>
-
-              <button type="button" id="savePaymentSettingsBtn" class="btn btn-primary full-width">
-                💾 Karta va to'lov sozlamalarini saqlash
-              </button>
-            </div>
-
-            <!-- Right: Telegram Account Login & Recent HUMO Bot Feed -->
-            <div class="admin-payment-col">
-              <div class="telegram-auth-box" id="adminTelegramAuthBox">
-                <div class="tg-box-head">
-                  <strong>Telegram hisobni ulash (Telethon MTProto)</strong>
-                  <button type="button" id="telegramDisconnectBtn" class="btn btn-danger-outline btn-xs hidden">
-                    Uzish
-                  </button>
-                </div>
-                <p class="tg-box-sub" id="adminTelegramAccountDetails">
-                  @HUMOcardbot xabarlarini jonli o'qish uchun HUMO ulangan Telegram raqamingiz bilan kiring.
-                </p>
-
-                <div class="form-group">
-                  <label for="telegramPhoneInput" class="form-label">Telegram telefon raqami</label>
-                  <div class="input-with-btn">
-                    <input
-                      id="telegramPhoneInput"
-                      type="text"
-                      class="text-input"
-                      placeholder="+998901234567"
-                      autocomplete="tel"
-                    />
-                    <button type="button" id="telegramSendCodeBtn" class="btn btn-secondary btn-sm">
-                      Kod yuborish
-                    </button>
+              <div id="telegramCodeGroup" class="tg-code-group hidden">
+                <div class="form-row-2">
+                  <div class="form-group">
+                    <label class="form-label" for="telegramCodeInput">Tasdiqlash kodi</label>
+                    <input id="telegramCodeInput" type="text" class="text-input" placeholder="12345" autocomplete="one-time-code" />
+                  </div>
+                  <div class="form-group">
+                    <label class="form-label" for="telegramPasswordInput">2-bosqichli parol (bo'lsa)</label>
+                    <input id="telegramPasswordInput" type="password" class="text-input" placeholder="Ixtiyoriy" autocomplete="off" />
                   </div>
                 </div>
-
-                <div id="telegramCodeGroup" class="tg-code-group hidden">
-                  <div class="form-row-2">
-                    <div class="form-group">
-                      <label for="telegramCodeInput" class="form-label">Telegramdan kelgan kod</label>
-                      <input
-                        id="telegramCodeInput"
-                        type="text"
-                        class="text-input"
-                        placeholder="12345"
-                        autocomplete="one-time-code"
-                      />
-                    </div>
-                    <div class="form-group">
-                      <label for="telegramPasswordInput" class="form-label">2-bosqichli parol (bo'lsa)</label>
-                      <input
-                        id="telegramPasswordInput"
-                        type="password"
-                        class="text-input"
-                        placeholder="Ixtiyoriy 2FA parol"
-                        autocomplete="off"
-                      />
-                    </div>
-                  </div>
-                  <button type="button" id="telegramVerifyCodeBtn" class="btn btn-success btn-sm full-width">
-                    Tasdiqlash va Telegramni ulash
-                  </button>
-                </div>
-
-                <div id="telegramAuthMessage" class="tg-auth-msg hidden"></div>
+                <button type="button" id="telegramVerifyCodeBtn" class="btn btn-success btn-sm">Tasdiqlash va saqlash</button>
               </div>
+              <div id="telegramAuthMessage" class="tg-auth-msg hidden"></div>
+            </div>
 
-              <!-- Live incoming @HUMOcardbot messages preview -->
-              <div class="humo-feed-box">
-                <div class="humo-feed-head">
-                  <strong>Oxirgi @HUMOcardbot tushumlari</strong>
-                  <button type="button" id="refreshHumoPaymentsBtn" class="btn btn-secondary btn-xs">
-                    Botni tekshirish
-                  </button>
-                </div>
-                <div id="adminHumoPaymentsList" class="humo-feed-list">
-                  <p class="humo-feed-empty">Hozircha tushumlar ro'yxati yuklanmadi.</p>
-                </div>
+            <hr class="admin-divider" />
+
+            <div class="admin-section-label">3. Oxirgi tushumlar (@HUMOcardbot)</div>
+            <div class="humo-feed-box">
+              <div class="tg-box-head">
+                <strong>Tushumlar ro'yxati</strong>
+                <button type="button" id="refreshHumoPaymentsBtn" class="btn btn-secondary btn-xs">Yangilash</button>
+              </div>
+              <div id="adminHumoPaymentsList" class="humo-feed-list">
+                <div class="humo-feed-empty">Ko'rish uchun "Yangilash" tugmasini bosing.</div>
               </div>
             </div>
           </div>
-        </div>
 
-        <!-- 4. Admin Security Credentials Card -->
-        <div class="card admin-card" data-admin-section="settings">
-          <h3>🔐 Admin login va parolni yangilash</h3>
-          <p class="card-desc">Boshqaruv paneliga kirish ma'lumotlarini o'zgartirish</p>
-
-          <div class="form-group">
-            <label for="newAdminUsername" class="form-label">Yangi login</label>
-            <input id="newAdminUsername" type="text" class="text-input" autocomplete="off" />
+          <!-- SECURITY -->
+          <div class="card admin-panel hidden" data-admin-panel="security">
+            <div class="admin-panel-head">
+              <div>
+                <h3>Admin login va parol</h3>
+                <p class="card-desc">Admin paneliga kirish ma'lumotlarini yangilash</p>
+              </div>
+            </div>
+            <div class="admin-narrow">
+              <div class="form-group">
+                <label class="form-label" for="newAdminUsername">Admin logini</label>
+                <input id="newAdminUsername" type="text" class="text-input" autocomplete="off" />
+              </div>
+              <div class="form-group">
+                <label class="form-label" for="currentAdminPassword">Joriy parol</label>
+                <input id="currentAdminPassword" type="password" class="text-input" placeholder="Joriy parolni kiriting" />
+              </div>
+              <div class="form-group">
+                <label class="form-label" for="newAdminPassword">Yangi parol (kamida 4 belgi)</label>
+                <input id="newAdminPassword" type="password" class="text-input" placeholder="Yangi parolni kiriting" />
+              </div>
+              <button type="button" id="saveCredentialsBtn" class="btn btn-primary">Login va parolni yangilash</button>
+            </div>
           </div>
-          <div class="form-group">
-            <label for="currentAdminPassword" class="form-label">Joriy parol</label>
-            <input id="currentAdminPassword" type="password" class="text-input" placeholder="Joriy parolni kiriting" />
-          </div>
-          <div class="form-group">
-            <label for="newAdminPassword" class="form-label">Yangi parol (kamida 4 ta belgi)</label>
-            <input id="newAdminPassword" type="password" class="text-input" placeholder="Yangi parolni kiriting" />
-          </div>
-
-          <button type="button" id="saveCredentialsBtn" class="btn btn-secondary full-width">
-            🔐 Login va parolni yangilash
-          </button>
         </div>
       </div>
     </section>
