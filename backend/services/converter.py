@@ -188,46 +188,252 @@ def _convert_image(input_path: Path, output_pdf_path: Path) -> int:
     return 1
 
 
+import shutil
+import subprocess
+import sys
+import tempfile
+import threading
+from io import BytesIO
+from PIL import Image as PILImage
+from reportlab.lib.pagesizes import landscape
+from reportlab.platypus import Image as RLImage
+
+_OFFICE_COM_LOCK = threading.Lock()
+_DOCX_BLIP_ATTR = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}embed"
+_DOCX_VML_ATTR = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id"
+
+
+def _make_rl_image(blob: bytes, max_w: float, max_h: float) -> RLImage | None:
+    """Decode raw image bytes via Pillow and fit them cleanly inside (max_w, max_h) points."""
+    try:
+        with PILImage.open(BytesIO(blob)) as im:
+            if im.mode not in ("RGB", "RGBA", "L"):
+                im = im.convert("RGBA" if "A" in im.getbands() else "RGB")
+            px_w, px_h = im.size
+            if px_w <= 0 or px_h <= 0:
+                return None
+            out = BytesIO()
+            im.save(out, format="PNG")
+            out.seek(0)
+        pt_w = px_w * 0.75
+        pt_h = px_h * 0.75
+        scale = min(max_w / pt_w, max_h / pt_h, 1.0)
+        return RLImage(out, width=max(12.0, pt_w * scale), height=max(12.0, pt_h * scale))
+    except Exception:
+        return None
+
+
+def _convert_office_via_com(input_path: Path, output_pdf_path: Path, kind: str) -> int | None:
+    """Convert .docx/.pptx to 1:1 PDF via Windows COM automation (WPS Office / MS Office)."""
+    if sys.platform != "win32":
+        return None
+    try:
+        import pythoncom
+        import win32com.client
+    except Exception:
+        return None
+
+    src_path = str(input_path.resolve())
+    dst_path = str(output_pdf_path.resolve())
+    output_pdf_path.parent.mkdir(parents=True, exist_ok=True)
+    prog_ids = (
+        ("KWPS.Application", "Word.Application")
+        if kind == "docx"
+        else ("KWPP.Application", "PowerPoint.Application")
+    )
+
+    with _OFFICE_COM_LOCK:
+        pythoncom.CoInitialize()
+        try:
+            for prog_id in prog_ids:
+                app = None
+                doc_obj = None
+                try:
+                    if output_pdf_path.exists():
+                        output_pdf_path.unlink()
+                except OSError:
+                    pass
+                try:
+                    app = win32com.client.DispatchEx(prog_id)
+                    try:
+                        app.DisplayAlerts = 0
+                    except Exception:
+                        pass
+                    if kind == "docx":
+                        try:
+                            app.Visible = False
+                        except Exception:
+                            pass
+                        doc_obj = app.Documents.Open(src_path, ReadOnly=True, Visible=False)
+                        try:
+                            doc_obj.ExportAsFixedFormat(dst_path, 17)
+                        except Exception:
+                            doc_obj.SaveAs(dst_path, 17)
+                    else:
+                        doc_obj = app.Presentations.Open(
+                            src_path, ReadOnly=1, Untitled=0, WithWindow=0
+                        )
+                        doc_obj.SaveAs(dst_path, 32)
+                except Exception:
+                    continue
+                finally:
+                    if doc_obj is not None:
+                        try:
+                            doc_obj.Close(0) if kind == "docx" else doc_obj.Close()
+                        except Exception:
+                            pass
+                    if app is not None:
+                        try:
+                            app.Quit()
+                        except Exception:
+                            pass
+                    doc_obj = None
+                    app = None
+
+                if output_pdf_path.exists() and output_pdf_path.stat().st_size > 0:
+                    return len(PdfReader(str(output_pdf_path)).pages)
+        finally:
+            pythoncom.CoUninitialize()
+    return None
+
+
+def _convert_office_via_libreoffice(input_path: Path, output_pdf_path: Path) -> int | None:
+    """Convert .docx/.pptx to 1:1 PDF via headless LibreOffice when installed (Linux/macOS/Windows)."""
+    bin_path = shutil.which("soffice") or shutil.which("libreoffice")
+    if not bin_path:
+        return None
+    try:
+        output_pdf_path.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            proc = subprocess.run(
+                [
+                    bin_path,
+                    "--headless",
+                    "--convert-to",
+                    "pdf",
+                    "--outdir",
+                    tmp_dir,
+                    str(input_path.resolve()),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=60,
+                check=False,
+            )
+            if proc.returncode != 0:
+                return None
+            candidate = Path(tmp_dir) / f"{input_path.stem}.pdf"
+            if not candidate.exists():
+                pdfs = list(Path(tmp_dir).glob("*.pdf"))
+                if not pdfs:
+                    return None
+                candidate = pdfs[0]
+            if candidate.stat().st_size <= 0:
+                return None
+            shutil.move(str(candidate), str(output_pdf_path))
+            return len(PdfReader(str(output_pdf_path)).pages)
+    except Exception:
+        return None
+
+
+def _extract_docx_element_rids(element) -> list[str]:
+    """Collect image relationship IDs embedded inside a DOCX XML subtree."""
+    rids: list[str] = []
+    for node in element.iter():
+        tag = node.tag.rsplit("}", 1)[-1]
+        if tag == "blip":
+            rid = node.get(_DOCX_BLIP_ATTR)
+            if rid:
+                rids.append(rid)
+        elif tag == "imagedata":
+            rid = node.get(_DOCX_VML_ATTR)
+            if rid:
+                rids.append(rid)
+    return rids
+
+
 def _convert_docx(input_path: Path, output_pdf_path: Path) -> int:
+    com_pages = _convert_office_via_com(input_path, output_pdf_path, "docx")
+    if com_pages:
+        return com_pages
+    lo_pages = _convert_office_via_libreoffice(input_path, output_pdf_path)
+    if lo_pages:
+        return lo_pages
+
     styles = _build_styles()
     doc = DocxDocument(str(input_path))
     story = []
+    max_img_w = A4[0] - 36 * mm
+    max_img_h = A4[1] - 50 * mm
+    para_map = {p._element: p for p in doc.paragraphs}
+    tbl_map = {t._element: t for t in doc.tables}
+    seen_rids: set[str] = set()
 
-    for para in doc.paragraphs:
-        text = para.text.strip()
-        if not text:
-            story.append(Spacer(1, 4))
-            continue
-        style_name = (para.style.name or "").lower()
-        safe_text = escape(text).replace("\n", "<br/>")
-        if "heading 1" in style_name or "title" in style_name:
-            story.append(Paragraph(safe_text, styles["h1"]))
-        elif "heading" in style_name:
-            story.append(Paragraph(safe_text, styles["h2"]))
-        else:
-            story.append(Paragraph(safe_text, styles["body"]))
+    def _append_rids(element) -> None:
+        for rid in _extract_docx_element_rids(element):
+            if rid in seen_rids:
+                continue
+            rel = doc.part.rels.get(rid)
+            if rel is None or getattr(rel, "is_external", False):
+                continue
+            seen_rids.add(rid)
+            rl_img = _make_rl_image(rel.target_part.blob, max_img_w, max_img_h)
+            if rl_img is not None:
+                story.append(Spacer(1, 4))
+                story.append(rl_img)
+                story.append(Spacer(1, 6))
 
-    for tbl in doc.tables:
-        rows_data = []
-        for row in tbl.rows:
-            rows_data.append(
-                [Paragraph(escape(cell.text.strip() or " "), styles["body"]) for cell in row.cells]
-            )
-        if rows_data:
-            table = Table(rows_data, repeatRows=1)
-            table.setStyle(
-                TableStyle(
-                    [
-                        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#cbd5e1")),
-                        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#eef2ff")),
-                        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                        ("PADDING", (0, 0), (-1, -1), 6),
-                    ]
+    for child in doc.element.body:
+        if child in para_map:
+            para = para_map[child]
+            text = para.text.strip()
+            if text:
+                style_name = (para.style.name or "").lower()
+                safe_text = escape(text).replace("\n", "<br/>")
+                if "heading 1" in style_name or "title" in style_name:
+                    story.append(Paragraph(safe_text, styles["h1"]))
+                elif "heading" in style_name:
+                    story.append(Paragraph(safe_text, styles["h2"]))
+                else:
+                    story.append(Paragraph(safe_text, styles["body"]))
+            else:
+                story.append(Spacer(1, 4))
+            _append_rids(child)
+        elif child in tbl_map:
+            tbl = tbl_map[child]
+            rows_data = []
+            for row in tbl.rows:
+                rows_data.append(
+                    [Paragraph(escape(cell.text.strip() or " "), styles["body"]) for cell in row.cells]
                 )
-            )
+            if rows_data:
+                table = Table(rows_data, repeatRows=1)
+                table.setStyle(
+                    TableStyle(
+                        [
+                            ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#cbd5e1")),
+                            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#eef2ff")),
+                            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                            ("PADDING", (0, 0), (-1, -1), 6),
+                        ]
+                    )
+                )
+                story.append(Spacer(1, 6))
+                story.append(table)
+                story.append(Spacer(1, 8))
+            _append_rids(child)
+
+    for rid, rel in doc.part.rels.items():
+        if rid in seen_rids or getattr(rel, "is_external", False):
+            continue
+        if "image" not in str(getattr(rel, "reltype", "")).lower():
+            continue
+        seen_rids.add(rid)
+        rl_img = _make_rl_image(rel.target_part.blob, max_img_w, max_img_h)
+        if rl_img is not None:
+            story.append(Spacer(1, 4))
+            story.append(rl_img)
             story.append(Spacer(1, 6))
-            story.append(table)
-            story.append(Spacer(1, 8))
 
     if not story:
         story.append(Paragraph("Bo'sh Word hujjati", styles["body"]))
@@ -245,14 +451,82 @@ def _convert_docx(input_path: Path, output_pdf_path: Path) -> int:
 
 
 def _convert_pptx(input_path: Path, output_pdf_path: Path) -> int:
+    com_pages = _convert_office_via_com(input_path, output_pdf_path, "pptx")
+    if com_pages:
+        return com_pages
+    lo_pages = _convert_office_via_libreoffice(input_path, output_pdf_path)
+    if lo_pages:
+        return lo_pages
+
     styles = _build_styles()
     prs = Presentation(str(input_path))
+    slide_pagesize = landscape(A4)
+    max_img_w = slide_pagesize[0] - 40 * mm
+    max_img_h = (slide_pagesize[1] - 60 * mm) * 0.65
     story = []
 
+    def _collect_shape(shape, slide_title_shape) -> bool:
+        has_content = False
+        if hasattr(shape, "shapes"):
+            for sub in shape.shapes:
+                if _collect_shape(sub, slide_title_shape):
+                    has_content = True
+            return has_content
+
+        if slide_title_shape is not None and shape == slide_title_shape:
+            return False
+
+        if hasattr(shape, "image"):
+            try:
+                rl_img = _make_rl_image(shape.image.blob, max_img_w, max_img_h)
+                if rl_img is not None:
+                    story.append(Spacer(1, 4))
+                    story.append(rl_img)
+                    story.append(Spacer(1, 6))
+                    has_content = True
+            except Exception:
+                pass
+
+        if getattr(shape, "has_table", False):
+            rows_data = []
+            for row in shape.table.rows:
+                rows_data.append(
+                    [Paragraph(escape(cell.text.strip() or " "), styles["body"]) for cell in row.cells]
+                )
+            if rows_data:
+                table = Table(rows_data, repeatRows=1)
+                table.setStyle(
+                    TableStyle(
+                        [
+                            ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#cbd5e1")),
+                            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#eef2ff")),
+                            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                            ("PADDING", (0, 0), (-1, -1), 5),
+                        ]
+                    )
+                )
+                story.append(Spacer(1, 4))
+                story.append(table)
+                story.append(Spacer(1, 6))
+                has_content = True
+
+        if getattr(shape, "has_text_frame", False):
+            for p in shape.text_frame.paragraphs:
+                line = p.text.strip()
+                if line:
+                    has_content = True
+                    story.append(Paragraph(f"• {escape(line)}", styles["body"]))
+        return has_content
+
     for idx, slide in enumerate(prs.slides, start=1):
+        title_shape = None
         title_text = ""
-        if slide.shapes.title and slide.shapes.title.text:
-            title_text = slide.shapes.title.text.strip()
+        try:
+            title_shape = slide.shapes.title
+            if title_shape and title_shape.text:
+                title_text = title_shape.text.strip()
+        except Exception:
+            title_shape = None
 
         story.append(
             Paragraph(
@@ -262,17 +536,10 @@ def _convert_pptx(input_path: Path, output_pdf_path: Path) -> int:
         )
         has_body = False
         for shape in slide.shapes:
-            if not shape.has_text_frame:
-                continue
-            if slide.shapes.title and shape == slide.shapes.title:
-                continue
-            for p in shape.text_frame.paragraphs:
-                line = p.text.strip()
-                if line:
-                    has_body = True
-                    story.append(Paragraph(f"• {escape(line)}", styles["body"]))
+            if _collect_shape(shape, title_shape):
+                has_body = True
         if not has_body:
-            story.append(Paragraph("(Matn tarkibi mavjud emas)", styles["body"]))
+            story.append(Paragraph("(Slayd tarkibi mavjud emas)", styles["body"]))
         if idx < len(prs.slides):
             story.append(PageBreak())
 
@@ -281,7 +548,7 @@ def _convert_pptx(input_path: Path, output_pdf_path: Path) -> int:
 
     pdf_doc = SimpleDocTemplate(
         str(output_pdf_path),
-        pagesize=A4,
+        pagesize=slide_pagesize,
         leftMargin=20 * mm,
         rightMargin=20 * mm,
         topMargin=20 * mm,

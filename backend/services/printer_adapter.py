@@ -613,6 +613,11 @@ def _print_single_pdf_gdi(
                     pil_img = pil_img.convert("RGB")
 
                 img_w, img_h = pil_img.size
+                if (img_w > img_h and printable_h > printable_w) or (
+                    img_h > img_w and printable_w > printable_h
+                ):
+                    pil_img = pil_img.rotate(90, expand=True)
+                    img_w, img_h = pil_img.size
                 fit_scale = min(printable_w / max(1, img_w), printable_h / max(1, img_h))
                 draw_w = max(1, int(img_w * fit_scale))
                 draw_h = max(1, int(img_h * fit_scale))
