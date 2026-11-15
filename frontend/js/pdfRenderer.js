@@ -103,7 +103,10 @@ window.PdfRenderer = (() => {
     canvas.height = Math.max(1, Math.floor(cssH * dpr));
 
     if (fitContainer && canvas.parentElement) {
-      canvas.parentElement.classList.toggle("is-landscape", rotW > rotH);
+      const isLandscape = rotW > rotH;
+      canvas.parentElement.classList.toggle("is-landscape", isLandscape);
+      const card = canvas.parentElement.closest(".page-card");
+      if (card) card.classList.toggle("is-landscape-card", isLandscape);
     }
     if (fitContainer) {
       canvas.style.width = "";
@@ -143,7 +146,10 @@ window.PdfRenderer = (() => {
     canvas.width = Math.floor(viewport.width);
     canvas.height = Math.floor(viewport.height);
     if (fitContainer && canvas.parentElement) {
-      canvas.parentElement.classList.toggle("is-landscape", rotatedBase.width > rotatedBase.height);
+      const isLandscape = rotatedBase.width > rotatedBase.height;
+      canvas.parentElement.classList.toggle("is-landscape", isLandscape);
+      const card = canvas.parentElement.closest(".page-card");
+      if (card) card.classList.toggle("is-landscape-card", isLandscape);
     }
     if (fitContainer) {
       canvas.style.width = "";

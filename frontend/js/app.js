@@ -63,8 +63,16 @@
     uploadLoader: document.getElementById("uploadLoader"),
     uploadLoaderText: document.getElementById("uploadLoaderText"),
 
+    heroBwPrice: document.getElementById("heroBwPrice"),
+    heroColorPrice: document.getElementById("heroColorPrice"),
+    heroPrinterName: document.getElementById("heroPrinterName"),
+    segBwPriceBadge: document.getElementById("segBwPriceBadge"),
+    segColorPriceBadge: document.getElementById("segColorPriceBadge"),
+
     selectionSummaryBadge: document.getElementById("selectionSummaryBadge"),
     btnSelectAll: document.getElementById("btnSelectAll"),
+    btnSelectOdd: document.getElementById("btnSelectOdd"),
+    btnSelectEven: document.getElementById("btnSelectEven"),
     btnClearSelection: document.getElementById("btnClearSelection"),
     pageRangeInput: document.getElementById("pageRangeInput"),
     rangeErrorMsg: document.getElementById("rangeErrorMsg"),
@@ -97,7 +105,12 @@
     summaryTimeText: document.getElementById("summaryTimeText"),
     summaryCostText: document.getElementById("summaryCostText"),
     printSubmitBtn: document.getElementById("printSubmitBtn"),
+    printSubmitPriceBadge: document.getElementById("printSubmitPriceBadge"),
     printValidationHint: document.getElementById("printValidationHint"),
+    mobileStickyBar: document.getElementById("mobileStickyBar"),
+    mobileStickyPages: document.getElementById("mobileStickyPages"),
+    mobileStickyTotal: document.getElementById("mobileStickyTotal"),
+    mobilePrintSubmitBtn: document.getElementById("mobilePrintSubmitBtn"),
 
     // Admin Login Modal
     adminLoginModal: document.getElementById("adminLoginModal"),
@@ -282,6 +295,17 @@
       el.detectedPrinterName.textContent = preferred
         ? preferred.name
         : "Printer ulanmagan";
+      if (el.heroPrinterName) {
+        el.heroPrinterName.textContent = preferred ? preferred.name : "Test rejimi";
+      }
+      if (status.pricing) {
+        const bwPriceStr = formatMoney(status.pricing.bw_simplex || 400);
+        const colorPriceStr = formatMoney(status.pricing.color_simplex || 1000);
+        if (el.heroBwPrice) el.heroBwPrice.textContent = bwPriceStr;
+        if (el.heroColorPrice) el.heroColorPrice.textContent = colorPriceStr;
+        if (el.segBwPriceBadge) el.segBwPriceBadge.textContent = bwPriceStr;
+        if (el.segColorPriceBadge) el.segColorPriceBadge.textContent = colorPriceStr;
+      }
 
       const currentVal = el.printerSelect.value;
       el.printerSelect.innerHTML = `<option value="">Avtomatik (Keyin ulanadi)</option>`;
@@ -641,7 +665,24 @@
     if (el.summaryTimeText) {
       el.summaryTimeText.textContent = formatDuration(estimatedSeconds);
     }
-    el.summaryCostText.textContent = formatMoney(estimatedCost);
+    const costFormatted = formatMoney(estimatedCost);
+    el.summaryCostText.textContent = costFormatted;
+    if (el.printSubmitPriceBadge) {
+      el.printSubmitPriceBadge.textContent = costFormatted;
+    }
+    if (el.mobileStickyPages) {
+      el.mobileStickyPages.textContent = `${count} bet • ${physicalSheets} varaq`;
+    }
+    if (el.mobileStickyTotal) {
+      el.mobileStickyTotal.textContent = costFormatted;
+    }
+    if (el.mobilePrintSubmitBtn) {
+      el.mobilePrintSubmitBtn.disabled = count === 0;
+    }
+    document.querySelectorAll(".copy-preset-btn[data-copy-preset]").forEach((btn) => {
+      const presetVal = parseInt(btn.getAttribute("data-copy-preset"), 10);
+      btn.classList.toggle("is-active", presetVal === state.copies);
+    });
   }
 
   async function openZoomModal(pageNum) {
@@ -1172,7 +1213,7 @@
     }
 
     const hasDetails = q.printer_busy || q.waiting_count > 0 || (q.recent_jobs && q.recent_jobs.length > 0);
-    el.toggleQueueDetailsBtn.classList.toggle("hidden", !hasDetails || q.printer_busy);
+    el.toggleQueueDetailsBtn.classList.toggle("hidden", !hasDetails);
 
     if (q.active_job) {
       const act = q.active_job;
@@ -1323,7 +1364,7 @@
       el.liveRecentList.innerHTML = `<div class="live-empty">Hali chiqarilgan hujjatlar yo'q</div>`;
     }
 
-    const showColumns = q.printer_busy || q.waiting_count > 0 || state.showQueueDetails;
+    const showColumns = q.waiting_count > 0 || state.showQueueDetails;
     el.liveQueueColumns.classList.toggle("hidden", !showColumns);
     syncOpenJobModalWithLiveQueue();
   }
@@ -1957,9 +1998,45 @@
       syncSelectionUI({ syncTextInput: true });
     });
 
+    if (el.btnSelectOdd) {
+      el.btnSelectOdd.addEventListener("click", () => {
+        if (!state.currentDoc) return;
+        state.selectedPages = new Set(
+          Array.from({ length: state.currentDoc.page_count }, (_, i) => i + 1).filter(
+            (p) => p % 2 === 1
+          )
+        );
+        syncSelectionUI({ syncTextInput: true });
+      });
+    }
+
+    if (el.btnSelectEven) {
+      el.btnSelectEven.addEventListener("click", () => {
+        if (!state.currentDoc) return;
+        state.selectedPages = new Set(
+          Array.from({ length: state.currentDoc.page_count }, (_, i) => i + 1).filter(
+            (p) => p % 2 === 0
+          )
+        );
+        syncSelectionUI({ syncTextInput: true });
+      });
+    }
+
     el.btnClearSelection.addEventListener("click", () => {
       state.selectedPages.clear();
       syncSelectionUI({ syncTextInput: true });
+    });
+
+    // Grid thumbnail size switcher (Kichik / O'rta / Katta)
+    document.querySelectorAll(".grid-size-btn[data-grid-size]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const size = btn.getAttribute("data-grid-size") || "md";
+        el.pagesGrid.classList.remove("size-sm", "size-md", "size-lg");
+        el.pagesGrid.classList.add(`size-${size}`);
+        document.querySelectorAll(".grid-size-btn[data-grid-size]").forEach((b) => {
+          b.classList.toggle("is-active", b === btn);
+        });
+      });
     });
 
     // Range text input live sync
@@ -1981,7 +2058,7 @@
       }
     });
 
-    // Copies stepper
+    // Copies stepper & quick presets
     el.copiesMinusBtn.addEventListener("click", () => {
       state.copies = Math.max(1, state.copies - 1);
       el.copiesValue.textContent = String(state.copies);
@@ -1991,6 +2068,14 @@
       state.copies = Math.min(99, state.copies + 1);
       el.copiesValue.textContent = String(state.copies);
       updateMetricsSummary();
+    });
+    document.querySelectorAll(".copy-preset-btn[data-copy-preset]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const val = parseInt(btn.getAttribute("data-copy-preset"), 10) || 1;
+        state.copies = Math.max(1, Math.min(99, val));
+        el.copiesValue.textContent = String(state.copies);
+        updateMetricsSummary();
+      });
     });
 
     // Color mode
@@ -2046,6 +2131,23 @@
 
     // Submit Print
     el.printSubmitBtn.addEventListener("click", submitPrintJob);
+    if (el.mobilePrintSubmitBtn) {
+      el.mobilePrintSubmitBtn.addEventListener("click", submitPrintJob);
+    }
+
+    // Admin Section Filter Tabs
+    document.querySelectorAll(".admin-section-tab[data-admin-tab]").forEach((tabBtn) => {
+      tabBtn.addEventListener("click", () => {
+        const target = tabBtn.getAttribute("data-admin-tab") || "all";
+        document.querySelectorAll(".admin-section-tab[data-admin-tab]").forEach((b) => {
+          b.classList.toggle("is-active", b === tabBtn);
+        });
+        document.querySelectorAll("#adminView [data-admin-section]").forEach((sec) => {
+          const secName = sec.getAttribute("data-admin-section");
+          sec.classList.toggle("hidden", target !== "all" && secName !== target);
+        });
+      });
+    });
 
     // Zoom modal controls
     el.zoomCloseBtn.addEventListener("click", closeZoomModal);
