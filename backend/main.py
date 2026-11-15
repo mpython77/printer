@@ -65,7 +65,10 @@ from backend.database import (
     list_recent_completed_jobs,
     list_waiting_queue_jobs,
     maybe_create_startup_backup,
+    claim_agent_pending_work,
+    queue_agent_command,
     record_agent_heartbeat,
+    request_agent_scan,
     recover_interrupted_jobs,
     save_document,
     update_admin_credentials,
@@ -99,7 +102,12 @@ from backend.models import (
     LiveQueueStatusResponse,
     PaymentConfigInfo,
     PricingInfo,
+    PrinterAutoConfigureRequest,
+    PrinterAutoConfigureResponse,
     PrinterInfo,
+    PrinterScanRequest,
+    PrinterScanResponse,
+    PrinterScanSummary,
     PrintJobCreateRequest,
     PrintJobResponse,
     PrintSegmentInfo,
@@ -121,6 +129,11 @@ from backend.services.printer_adapter import (
     get_active_printer_adapter,
     get_cups_spooler_status,
     get_spooler_status,
+)
+from backend.services.printer_discovery import (
+    auto_configure_cups_printer,
+    run_comprehensive_printer_scan,
+    sanitize_device_uri,
 )
 
 ADMIN_TOKEN_TTL_SECONDS = 12 * 3600
@@ -695,10 +708,20 @@ _MODE_DESCRIPTIONS = {
 }
 
 
+def _public_printer_info(raw: dict) -> PrinterInfo:
+    """Strip internal IP/URI/USB hardware paths before returning printer list to students."""
+    clean = dict(raw)
+    clean["port_or_uri"] = ""
+    clean["host_label"] = ""
+    clean["driver_name"] = ""
+    clean["source"] = "local"
+    return PrinterInfo(**clean)
+
+
 @app.get("/api/system-status", response_model=SystemStatusResponse)
 def system_status() -> SystemStatusResponse:
     settings = get_settings()
-    printers = [PrinterInfo(**p) for p in discover_all_printers(settings.get("agent_printers"))]
+    printers = [_public_printer_info(p) for p in discover_all_printers(settings.get("agent_printers"), settings=settings)]
     printer_mode = settings["printer_mode"]
     hardware_connected = printer_mode in {"LINUX_CUPS", "REMOTE_AGENT", "WINDOWS_SPOOLER"}
     mode_description = _MODE_DESCRIPTIONS.get(printer_mode, _MODE_DESCRIPTIONS["DRY_RUN"])
@@ -1047,8 +1070,8 @@ def submit_print_job(
         requested_printer = payload.printer_name.strip()
         allowed_printers = {
             str(p.get("name", "")).strip()
-            for p in discover_all_printers(live_settings.get("agent_printers"))
-            if p.get("name")
+            for p in discover_all_printers(live_settings.get("agent_printers"), settings=live_settings)
+            if p.get("name") and not p.get("is_virtual")
         }
         if live_settings.get("default_printer_name"):
             allowed_printers.add(str(live_settings["default_printer_name"]).strip())
@@ -1654,19 +1677,168 @@ def admin_login(payload: AdminLoginRequest, request: Request) -> AdminLoginRespo
     )
 
 
+def _to_printer_scan_response(scan_data: dict, agent_responded: bool = False) -> PrinterScanResponse:
+    summary_dict = dict(scan_data.get("summary") or {})
+    summary_dict["agent_responded"] = agent_responded
+    return PrinterScanResponse(
+        printers=[PrinterInfo(**p) for p in scan_data.get("printers", [])],
+        discovered_devices=[PrinterInfo(**d) for d in scan_data.get("discovered_devices", [])],
+        summary=PrinterScanSummary(**summary_dict),
+    )
+
+
 @app.get("/api/admin/dashboard", response_model=AdminDashboardResponse)
 def admin_dashboard(_admin: str = Depends(require_admin)) -> AdminDashboardResponse:
     settings = get_settings()
     stats = get_admin_stats()
-    printers = [PrinterInfo(**p) for p in discover_all_printers(settings.get("agent_printers"))]
+    scan_data = run_comprehensive_printer_scan(settings=settings, include_network_scan=False)
+    scan_res = _to_printer_scan_response(scan_data)
     jobs = [_job_to_response(j, include_secret_token=True, include_admin_fields=True) for j in list_print_jobs(limit=200)]
     tg_status = get_telegram_status(check_remote=False)
     return AdminDashboardResponse(
         stats=AdminStats(**stats),
         settings=_settings_to_payload(settings),
-        printers=printers,
+        printers=scan_res.printers,
+        discovered_devices=scan_res.discovered_devices,
+        scan_summary=scan_res.summary,
         jobs=jobs,
         telegram=TelegramStatusInfo(**tg_status),
+    )
+
+
+@app.post("/api/admin/printers/scan", response_model=PrinterScanResponse)
+def admin_scan_printers(
+    payload: PrinterScanRequest | None = None,
+    _admin: str = Depends(require_admin),
+) -> PrinterScanResponse:
+    req = payload or PrinterScanRequest()
+    settings = get_settings()
+    pre_check = run_comprehensive_printer_scan(settings=settings, include_network_scan=False)
+    agent_is_online = bool(pre_check["summary"].get("agent_online"))
+
+    scan_id = f"scan_{uuid.uuid4().hex[:10]}"
+    asked_agent = False
+    if agent_is_online or settings.get("printer_mode") == "REMOTE_AGENT":
+        request_agent_scan(scan_id, req.network_ip)
+        asked_agent = agent_is_online
+
+    local_scan = run_comprehensive_printer_scan(
+        settings=settings,
+        include_network_scan=req.include_network_scan,
+        network_ip=req.network_ip,
+    )
+
+    agent_responded = False
+    if asked_agent and req.wait_agent_seconds > 0:
+        deadline = time.monotonic() + min(req.wait_agent_seconds, 5.0)
+        while time.monotonic() < deadline:
+            fresh_settings = get_settings()
+            if fresh_settings.get("agent_last_scan_id") == scan_id:
+                agent_responded = True
+                merged = run_comprehensive_printer_scan(
+                    settings=fresh_settings,
+                    include_network_scan=False,
+                    network_ip="",
+                )
+                # Preserve local network mDNS / direct-IP findings captured in the first pass
+                seen_uris = {
+                    (d.get("port_or_uri") or d.get("name", "")).lower()
+                    for d in merged["discovered_devices"]
+                }
+                for dev in local_scan.get("discovered_devices", []):
+                    key = (dev.get("port_or_uri") or dev.get("name", "")).lower()
+                    if key and key not in seen_uris:
+                        seen_uris.add(key)
+                        merged["discovered_devices"].append(dev)
+                for layer in local_scan["summary"].get("layers_checked", []):
+                    if layer not in merged["summary"]["layers_checked"]:
+                        merged["summary"]["layers_checked"].append(layer)
+                for a_layer in fresh_settings.get("agent_scan_layers") or []:
+                    tag = f"pi:{a_layer}"
+                    if tag not in merged["summary"]["layers_checked"]:
+                        merged["summary"]["layers_checked"].append(tag)
+                if local_scan["summary"].get("target_ip_message"):
+                    merged["summary"]["target_ip_message"] = local_scan["summary"]["target_ip_message"]
+                merged["summary"]["unconfigured_hardware_count"] = len(merged["discovered_devices"])
+                local_scan = merged
+                break
+            time.sleep(0.18)
+
+    return _to_printer_scan_response(local_scan, agent_responded=agent_responded)
+
+
+@app.post("/api/admin/printers/auto-configure", response_model=PrinterAutoConfigureResponse)
+def admin_auto_configure_printer(
+    payload: PrinterAutoConfigureRequest,
+    _admin: str = Depends(require_admin),
+) -> PrinterAutoConfigureResponse:
+    try:
+        clean_uri = sanitize_device_uri(payload.device_uri)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if payload.host_scope == "agent":
+        cmd_id = f"cmd_{uuid.uuid4().hex[:10]}"
+        queue_agent_command(
+            {
+                "command_id": cmd_id,
+                "action": "AUTO_CONFIGURE_PRINTER",
+                "device_uri": clean_uri,
+                "queue_name": payload.queue_name.strip(),
+                "set_default": payload.set_default,
+            }
+        )
+        deadline = time.monotonic() + 5.5
+        while time.monotonic() < deadline:
+            fresh = get_settings()
+            cmd_res = fresh.get("agent_last_cmd_result") or {}
+            if cmd_res.get("command_id") == cmd_id:
+                ok = bool(cmd_res.get("ok"))
+                qname = str(cmd_res.get("queue_name") or payload.queue_name.strip())
+                if ok and payload.set_default and qname:
+                    fresh = update_settings({"default_printer_name": qname})
+                scan_res = _to_printer_scan_response(
+                    run_comprehensive_printer_scan(settings=fresh, include_network_scan=False),
+                    agent_responded=True,
+                )
+                return PrinterAutoConfigureResponse(
+                    ok=ok,
+                    pending=False,
+                    queue_name=qname,
+                    device_uri=clean_uri,
+                    model_used=str(cmd_res.get("model_used") or ""),
+                    message=str(cmd_res.get("message") or ("Printer ulandi." if ok else "Printer ulab bo'lmadi.")),
+                    scan=scan_res,
+                )
+            time.sleep(0.2)
+
+        return PrinterAutoConfigureResponse(
+            ok=True,
+            pending=True,
+            queue_name=payload.queue_name.strip(),
+            device_uri=clean_uri,
+            message="Ulash buyrug'i Raspberry Pi Agent navbatiga yuborildi. 2-3 soniyadan keyin qayta skanerlang.",
+        )
+
+    result = auto_configure_cups_printer(
+        device_uri=clean_uri,
+        queue_name=payload.queue_name,
+        set_default=payload.set_default,
+    )
+    fresh = get_settings()
+    if result.get("ok") and payload.set_default and result.get("queue_name"):
+        fresh = update_settings({"default_printer_name": result["queue_name"]})
+    scan_res = _to_printer_scan_response(
+        run_comprehensive_printer_scan(settings=fresh, include_network_scan=False)
+    )
+    return PrinterAutoConfigureResponse(
+        ok=bool(result.get("ok")),
+        pending=False,
+        queue_name=str(result.get("queue_name") or ""),
+        device_uri=str(result.get("device_uri") or clean_uri),
+        model_used=str(result.get("model_used") or ""),
+        message=str(result.get("message") or ""),
+        scan=scan_res,
     )
 
 
@@ -1888,18 +2060,48 @@ def agent_poll_next_job(
     _agent: str = Depends(require_agent_key),
 ) -> dict:
     printers_data = [p.model_dump() for p in payload.printers]
+    unconfigured_data = [d.model_dump() for d in payload.unconfigured_devices] if payload.unconfigured_devices else []
     record_agent_heartbeat(
         hostname=payload.hostname,
         printers=printers_data,
         cpu_temp_c=payload.cpu_temp_c,
+        unconfigured_devices=unconfigured_data,
+        os_info=payload.os_info,
+        scan_id=payload.scan_id,
+        scan_layers=payload.scan_layers,
+        command_result=payload.command_result,
     )
+    pending = claim_agent_pending_work()
     with QUEUE_LOCK:
         _tick_and_advance_queue()
         claimed = claim_next_agent_job()
         return {
             "ok": True,
             "job": _job_to_response(claimed, include_secret_token=True, include_admin_fields=True).model_dump() if claimed else None,
+            "scan_request": pending.get("scan_request"),
+            "pending_command": pending.get("pending_command"),
         }
+
+
+@app.post("/api/agent/scan-report")
+def agent_report_scan(
+    payload: AgentHeartbeatRequest,
+    _agent: str = Depends(require_agent_key),
+) -> dict:
+    """Receive an immediate on-demand hardware/USB/CUPS/mDNS scan or command result from Pi Agent."""
+    printers_data = [p.model_dump() for p in payload.printers]
+    unconfigured_data = [d.model_dump() for d in payload.unconfigured_devices]
+    record_agent_heartbeat(
+        hostname=payload.hostname,
+        printers=printers_data,
+        cpu_temp_c=payload.cpu_temp_c,
+        unconfigured_devices=unconfigured_data,
+        os_info=payload.os_info,
+        scan_id=payload.scan_id,
+        scan_layers=payload.scan_layers,
+        command_result=payload.command_result,
+    )
+    return {"ok": True, "scan_id": payload.scan_id}
 
 
 @app.post("/api/agent/jobs/{job_id}/report", response_model=PrintJobResponse)

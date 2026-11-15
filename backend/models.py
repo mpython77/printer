@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -101,10 +101,23 @@ class PrintJobResponse(BaseModel):
 
 class PrinterInfo(BaseModel):
     name: str
-    is_default: bool
-    status_text: str
-    is_offline: bool
-    jobs_in_queue: int
+    is_default: bool = False
+    status_text: str = "Tayyor"
+    is_offline: bool = False
+    jobs_in_queue: int = 0
+    source: str = "local"
+    connection_type: str = "LOCAL"
+    port_or_uri: str = ""
+    driver_name: str = ""
+    hardware_present: bool | None = None
+    is_virtual: bool = False
+    ready_to_print: bool = True
+    configured: bool = True
+    supports_color: bool | None = None
+    supports_duplex: bool | None = None
+    host_label: str = ""
+    can_auto_configure: bool = False
+    suggested_queue_name: str = ""
 
 
 class PricingInfo(BaseModel):
@@ -277,10 +290,61 @@ class LiveQueueStatusResponse(BaseModel):
     server_time: str
 
 
+class PrinterScanRequest(BaseModel):
+    network_ip: str = Field(default="", max_length=120)
+    include_network_scan: bool = True
+    wait_agent_seconds: float = Field(default=3.5, ge=0.0, le=8.0)
+
+
+class PrinterScanSummary(BaseModel):
+    total_configured: int = 0
+    ready_physical_count: int = 0
+    offline_physical_count: int = 0
+    virtual_count: int = 0
+    unconfigured_hardware_count: int = 0
+    agent_online: bool = False
+    agent_hostname: str = ""
+    agent_last_seen: str = ""
+    agent_stale_seconds: int | None = None
+    scanned_at: str = ""
+    layers_checked: list[str] = Field(default_factory=list)
+    recommendation: str = ""
+    target_ip_message: str = ""
+    agent_responded: bool = False
+
+
+class PrinterScanResponse(BaseModel):
+    printers: list[PrinterInfo] = Field(default_factory=list)
+    discovered_devices: list[PrinterInfo] = Field(default_factory=list)
+    summary: PrinterScanSummary
+
+
+class PrinterAutoConfigureRequest(BaseModel):
+    device_uri: str = Field(..., min_length=5, max_length=300)
+    queue_name: str = Field(default="", max_length=64)
+    host_scope: Literal["local", "agent"] = "local"
+    set_default: bool = True
+
+
+class PrinterAutoConfigureResponse(BaseModel):
+    ok: bool
+    pending: bool = False
+    queue_name: str = ""
+    device_uri: str = ""
+    model_used: str = ""
+    message: str
+    scan: PrinterScanResponse | None = None
+
+
 class AgentHeartbeatRequest(BaseModel):
     hostname: str = Field(default="", max_length=120)
     printers: list[PrinterInfo] = Field(default_factory=list)
+    unconfigured_devices: list[PrinterInfo] = Field(default_factory=list)
     cpu_temp_c: float | None = None
+    os_info: str = Field(default="", max_length=160)
+    scan_id: str = Field(default="", max_length=80)
+    scan_layers: list[str] = Field(default_factory=list)
+    command_result: dict[str, Any] | None = None
 
 
 class AgentJobReportRequest(BaseModel):
@@ -300,5 +364,7 @@ class AdminDashboardResponse(BaseModel):
     stats: AdminStats
     settings: AdminSettingsPayload
     printers: list[PrinterInfo]
+    discovered_devices: list[PrinterInfo] = Field(default_factory=list)
+    scan_summary: PrinterScanSummary | None = None
     jobs: list[PrintJobResponse]
     telegram: TelegramStatusInfo

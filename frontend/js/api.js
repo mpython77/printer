@@ -309,6 +309,33 @@ window.SmartPrintApi = (() => {
     return { filename };
   }
 
+  async function scanPrinters({ networkIp = "", includeNetworkScan = true, waitAgentSeconds = 3.5 } = {}) {
+    const res = await fetch("/api/admin/printers/scan", {
+      method: "POST",
+      headers: authHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({
+        network_ip: networkIp,
+        include_network_scan: includeNetworkScan,
+        wait_agent_seconds: waitAgentSeconds,
+      }),
+    });
+    return handleResponse(res);
+  }
+
+  async function autoConfigurePrinter({ deviceUri, queueName = "", hostScope = "local", setDefault = true }) {
+    const res = await fetch("/api/admin/printers/auto-configure", {
+      method: "POST",
+      headers: authHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({
+        device_uri: deviceUri,
+        queue_name: queueName,
+        host_scope: hostScope,
+        set_default: setDefault,
+      }),
+    });
+    return handleResponse(res);
+  }
+
   return {
     getClientToken,
     getAdminToken,
@@ -329,6 +356,8 @@ window.SmartPrintApi = (() => {
     deleteAdminPrintJob,
     clearAdminPrintJobs,
     downloadDatabaseBackup,
+    scanPrinters,
+    autoConfigurePrinter,
     verifyJobPayment,
     renewJobPayment,
     getReceiptUrl,

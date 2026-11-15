@@ -145,6 +145,10 @@
     piAgentStatusBox: document.getElementById("piAgentStatusBox"),
     adminPrintersList: document.getElementById("adminPrintersList"),
     savePrinterSettingsBtn: document.getElementById("savePrinterSettingsBtn"),
+    scanPrintersBtn: document.getElementById("scanPrintersBtn"),
+    scanNetworkIpInput: document.getElementById("scanNetworkIpInput"),
+    scanIpBtn: document.getElementById("scanIpBtn"),
+    printerScanSummaryBox: document.getElementById("printerScanSummaryBox"),
 
     newAdminUsername: document.getElementById("newAdminUsername"),
     currentAdminPassword: document.getElementById("currentAdminPassword"),
@@ -282,11 +286,14 @@
         el.printerModeText.textContent = "Printer: Test rejimi";
       }
 
+      const physicalPrinters = (status.printers || []).filter((p) => !p.is_virtual);
+      const readyPrinters = physicalPrinters.filter((p) => p.ready_to_print || !p.is_offline);
+      const candidatePool = readyPrinters.length ? readyPrinters : physicalPrinters;
       const preferred =
-        status.printers.find((p) => p.name === status.default_printer_name) ||
-        status.printers.find((p) => p.name.toLowerCase().includes("canon")) ||
-        status.printers.find((p) => p.is_default) ||
-        status.printers[0];
+        candidatePool.find((p) => p.name === status.default_printer_name) ||
+        candidatePool.find((p) => p.name.toLowerCase().includes("canon")) ||
+        candidatePool.find((p) => p.is_default) ||
+        candidatePool[0];
 
       el.detectedPrinterName.textContent = preferred
         ? preferred.name
@@ -305,7 +312,7 @@
 
       const currentVal = el.printerSelect.value;
       el.printerSelect.innerHTML = `<option value="">Avtomatik (Keyin ulanadi)</option>`;
-      status.printers.forEach((printer) => {
+      physicalPrinters.forEach((printer) => {
         const opt = document.createElement("option");
         opt.value = printer.name;
         opt.textContent = `${printer.name} — ${printer.status_text}`;
@@ -1462,16 +1469,6 @@
       el.secondsColorInput.value = data.settings.seconds_color_per_sheet ?? 14;
     }
     el.adminPrinterModeSelect.value = data.settings.printer_mode;
-
-    // Populate Admin Printers dropdown & status list
-    el.adminDefaultPrinterSelect.innerHTML = `<option value="">Avtomatik (Standart printer)</option>`;
-    data.printers.forEach((p) => {
-      const opt = document.createElement("option");
-      opt.value = p.name;
-      opt.textContent = `${p.name} — ${p.status_text}`;
-      el.adminDefaultPrinterSelect.appendChild(opt);
-    });
-    el.adminDefaultPrinterSelect.value = data.settings.default_printer_name || "";
     if (el.adminAgentKeyInput) {
       el.adminAgentKeyInput.value = data.settings.agent_api_key || "";
     }
@@ -1499,11 +1496,94 @@
       el.adminHumoPaymentsList.innerHTML = `<div class="humo-feed-empty">Telegram hisob ulanganidan keyin oxirgi tushumlar ko'rinadi.</div>`;
     }
 
+    renderPrinterInventory(
+      data.printers || [],
+      data.discovered_devices || [],
+      data.scan_summary || null,
+      data.settings || {}
+    );
+
+    renderAdminJobsList();
+  }
+
+  function _formatScanLayerLabel(layer) {
+    const map = {
+      windows_usb_pnp: "Windows USB PnP",
+      windows_spooler: "Windows Spooler",
+      cups_backends: "CUPS Backends",
+      linux_cups: "Linux CUPS",
+      linux_usb: "Linux USB Port",
+      mdns_network: "Wi-Fi / mDNS",
+      network_ip_probe: "IP Port Skaneri",
+      pi_agent: "Raspberry Pi Agent",
+      "pi:pi_cups": "Pi CUPS",
+      "pi:cups_backends": "Pi Backends",
+      "pi:linux_usb": "Pi USB",
+      "pi:mdns_network": "Pi Wi-Fi / mDNS",
+      "pi:network_ip_probe": "Pi IP Probe",
+    };
+    return map[layer] || layer;
+  }
+
+  function _renderPrinterBadgesHtml(p) {
+    const pills = [];
+    const connMap = {
+      USB: "USB",
+      NETWORK: "Tarmoq",
+      LOCAL: "Lokal",
+      VIRTUAL: "Virtual",
+      UNCONFIGURED_USB: "Yangi USB",
+      UNCONFIGURED_NETWORK: "Yangi Tarmoq",
+    };
+    const connLabel = connMap[p.connection_type] || p.connection_type || "Lokal";
+    pills.push(`<span class="tag-pill">${escapeHtml(connLabel)}</span>`);
+    if (p.supports_color === true) {
+      pills.push(`<span class="tag-pill">Rangli</span>`);
+    } else if (p.supports_color === false) {
+      pills.push(`<span class="tag-pill">Oq-qora</span>`);
+    }
+    if (p.supports_duplex === true) {
+      pills.push(`<span class="tag-pill">2-tomonlama</span>`);
+    }
+    if (p.hardware_present === true) {
+      pills.push(`<span class="status-tag status-tag--ok">Kabel/aloqa faol</span>`);
+    } else if (p.hardware_present === false) {
+      pills.push(`<span class="status-tag status-tag--warn">Aloqa yo'q</span>`);
+    }
+    return pills.join("");
+  }
+
+  function renderPrinterInventory(printers, discoveredDevices, summary, settingsSnapshot = null) {
+    const settings = settingsSnapshot || (state.adminDashboard && state.adminDashboard.settings) || {};
+    const currentDefault = settingsSnapshot
+      ? (settingsSnapshot.default_printer_name || "")
+      : (el.adminDefaultPrinterSelect ? el.adminDefaultPrinterSelect.value : settings.default_printer_name || "");
+
+    if (el.adminDefaultPrinterSelect) {
+      el.adminDefaultPrinterSelect.innerHTML = `<option value="">Avtomatik (Standart printer)</option>`;
+      printers.forEach((p) => {
+        const opt = document.createElement("option");
+        opt.value = p.name;
+        const kindHint = p.is_virtual ? " [Virtual]" : p.ready_to_print ? " [Tayyor]" : " [Oflayn]";
+        opt.textContent = `${p.name}${kindHint} — ${p.status_text}`;
+        el.adminDefaultPrinterSelect.appendChild(opt);
+      });
+      el.adminDefaultPrinterSelect.value = currentDefault;
+    }
+
     if (el.piAgentStatusBox) {
-      if (data.settings.agent_last_seen) {
+      const agentOnline = summary ? Boolean(summary.agent_online) : false;
+      const lastSeen = (summary && summary.agent_last_seen) || settings.agent_last_seen || "";
+      const hostName = (summary && summary.agent_hostname) || settings.agent_hostname || "raspberrypi";
+      if (lastSeen && agentOnline) {
         el.piAgentStatusBox.innerHTML = `
-          <span><strong>Raspberry Pi Agent:</strong> ${escapeHtml(data.settings.agent_hostname || "raspberrypi")}</span>
-          <span class="status-tag status-tag--ok">Oxirgi aloqa: ${escapeHtml(formatDateTime(data.settings.agent_last_seen))}</span>
+          <span><strong>Raspberry Pi Agent:</strong> ${escapeHtml(hostName)}</span>
+          <span class="status-tag status-tag--ok">Onlayn • ${escapeHtml(formatDateTime(lastSeen))}</span>
+        `;
+      } else if (lastSeen) {
+        el.piAgentStatusBox.innerHTML = `
+          <span><strong>Raspberry Pi Agent:</strong> ${escapeHtml(hostName)}</span>
+          <span class="status-tag status-tag--warn">Uzilgan • Oxirgi aloqa: ${escapeHtml(formatDateTime(lastSeen))}</span>
         `;
       } else {
         el.piAgentStatusBox.innerHTML = `
@@ -1513,22 +1593,177 @@
       }
     }
 
-    if (!data.printers.length) {
-      el.adminPrintersList.innerHTML = `<div class="printer-mini-item">Mahalliy yoki Raspberry Pi printerlari aniqlanmadi.</div>`;
-    } else {
-      el.adminPrintersList.innerHTML = data.printers
-        .map(
-          (p) => `
-        <div class="printer-mini-item">
-          <span><strong>${escapeHtml(p.name)}</strong></span>
-          <span class="status-tag ${p.is_offline ? "" : "status-tag--ok"}">${escapeHtml(p.status_text)}</span>
-        </div>
-      `
-        )
-        .join("");
+    if (el.printerScanSummaryBox) {
+      if (summary) {
+        const hasReady = (summary.ready_physical_count || 0) > 0;
+        const hasNew = (summary.unconfigured_hardware_count || 0) > 0;
+        const stateCls = hasReady ? "is-ok" : hasNew ? "is-warn" : "is-empty";
+        const layersHtml = (summary.layers_checked || [])
+          .map((l) => `<span class="tag-pill">${escapeHtml(_formatScanLayerLabel(l))}</span>`)
+          .join("");
+        el.printerScanSummaryBox.className = `scan-summary-box ${stateCls}`;
+        el.printerScanSummaryBox.innerHTML = `
+          <div class="scan-summary-head">
+            <strong>${escapeHtml(summary.recommendation || "Skanerlash natijasi")}</strong>
+            <span class="scan-counts-inline">Tayyor: ${summary.ready_physical_count || 0} • Yangi: ${summary.unconfigured_hardware_count || 0} • Oflayn: ${summary.offline_physical_count || 0}</span>
+          </div>
+          ${summary.target_ip_message ? `<div class="scan-ip-note">${escapeHtml(summary.target_ip_message)}</div>` : ""}
+          ${layersHtml ? `<div class="scan-layers-strip">${layersHtml}</div>` : ""}
+        `;
+        el.printerScanSummaryBox.classList.remove("hidden");
+      } else {
+        el.printerScanSummaryBox.classList.add("hidden");
+      }
     }
 
-    renderAdminJobsList();
+    if (!el.adminPrintersList) return;
+
+    const readyPhys = printers.filter((p) => !p.is_virtual && p.ready_to_print);
+    const offlinePhys = printers.filter((p) => !p.is_virtual && !p.ready_to_print);
+    const virtList = printers.filter((p) => p.is_virtual);
+    const activeDefault = settings.default_printer_name || "";
+
+    const renderCard = (p, kind) => {
+      const isDef = activeDefault ? p.name === activeDefault : p.is_default;
+      const metaParts = [];
+      if (p.port_or_uri) metaParts.push(p.port_or_uri);
+      if (p.host_label) metaParts.push(p.host_label);
+      if (p.jobs_in_queue > 0) metaParts.push(`Navbatda: ${p.jobs_in_queue}`);
+
+      let actionHtml = "";
+      if (kind === "unconfigured") {
+        const scope = p.source === "pi_agent" ? "agent" : "local";
+        actionHtml = p.can_auto_configure
+          ? `<button type="button" class="btn btn-primary btn-xs auto-config-printer-btn" data-uri="${escapeHtml(p.port_or_uri || "")}" data-queue="${escapeHtml(p.suggested_queue_name || p.name)}" data-scope="${scope}">CUPS ga avto-ulash</button>`
+          : `<span class="status-tag status-tag--warn">Qo'lda sozlash kerak</span>`;
+      } else if (kind !== "virtual") {
+        actionHtml = isDef
+          ? `<span class="status-tag status-tag--ok">Asosiy printer</span>`
+          : `<button type="button" class="btn btn-outline btn-xs set-default-printer-btn" data-printer-name="${escapeHtml(p.name)}">Asosiy qilish</button>`;
+      }
+
+      const statusBadgeCls =
+        kind === "ready" ? "status-tag--ok" : kind === "unconfigured" || kind === "offline" ? "status-tag--warn" : "";
+
+      return `
+        <div class="printer-hw-card printer-hw-card--${kind}">
+          <div class="printer-hw-main">
+            <div class="printer-hw-title">
+              <strong>${escapeHtml(p.name)}</strong>
+              <span class="status-tag ${statusBadgeCls}">${escapeHtml(p.status_text || "")}</span>
+            </div>
+            <div class="printer-hw-badges">${_renderPrinterBadgesHtml(p)}</div>
+            ${metaParts.length ? `<div class="printer-hw-meta">${escapeHtml(metaParts.join(" • "))}</div>` : ""}
+          </div>
+          ${actionHtml ? `<div class="printer-hw-actions">${actionHtml}</div>` : ""}
+        </div>
+      `;
+    };
+
+    const blocks = [];
+    if (readyPhys.length) {
+      blocks.push(`<div class="printer-scan-group-title">Tayyor jismoniy printerlar (${readyPhys.length})</div>`);
+      blocks.push(readyPhys.map((p) => renderCard(p, "ready")).join(""));
+    }
+    if (discoveredDevices.length) {
+      blocks.push(`<div class="printer-scan-group-title">Yangi aniqlangan USB / Tarmoq printerlar (${discoveredDevices.length})</div>`);
+      blocks.push(discoveredDevices.map((p) => renderCard(p, "unconfigured")).join(""));
+    }
+    if (offlinePhys.length) {
+      blocks.push(`<div class="printer-scan-group-title">Oflayn yoki kabeli uzilgan printerlar (${offlinePhys.length})</div>`);
+      blocks.push(offlinePhys.map((p) => renderCard(p, "offline")).join(""));
+    }
+    if (!readyPhys.length && !discoveredDevices.length && !offlinePhys.length) {
+      blocks.push(`<div class="printer-mini-item">Jismoniy printer topilmadi. Printer kabelini ulab «Printerlarni skanerlash» tugmasini bosing.</div>`);
+    }
+    if (virtList.length) {
+      blocks.push(`
+        <details class="virtual-printers-details">
+          <summary>Virtual dasturiy printerlar (${virtList.length})</summary>
+          <div class="virtual-printers-list">
+            ${virtList.map((p) => renderCard(p, "virtual")).join("")}
+          </div>
+        </details>
+      `);
+    }
+
+    el.adminPrintersList.innerHTML = blocks.join("");
+
+    el.adminPrintersList.querySelectorAll(".set-default-printer-btn").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const chosen = btn.getAttribute("data-printer-name") || "";
+        if (!chosen) return;
+        if (el.adminDefaultPrinterSelect) {
+          el.adminDefaultPrinterSelect.value = chosen;
+        }
+        await saveAdminSettingsFromUI(`Asosiy printer tanlandi: ${chosen}`);
+      });
+    });
+
+    el.adminPrintersList.querySelectorAll(".auto-config-printer-btn").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const deviceUri = btn.getAttribute("data-uri") || "";
+        const queueName = btn.getAttribute("data-queue") || "";
+        const hostScope = btn.getAttribute("data-scope") || "local";
+        if (!deviceUri) return;
+        btn.disabled = true;
+        btn.textContent = "Ulanmoqda...";
+        try {
+          const res = await SmartPrintApi.autoConfigurePrinter({
+            deviceUri,
+            queueName,
+            hostScope,
+            setDefault: true,
+          });
+          showToast(res.message || "Printer ulandi!", res.ok ? "success" : "error");
+          if (res.scan) {
+            renderPrinterInventory(
+              res.scan.printers || [],
+              res.scan.discovered_devices || [],
+              res.scan.summary || null
+            );
+          }
+          await Promise.all([loadSystemStatus(), loadAdminDashboard()]);
+        } catch (err) {
+          showToast(err.message, "error");
+          btn.disabled = false;
+          btn.textContent = "CUPS ga avto-ulash";
+        }
+      });
+    });
+  }
+
+  async function handleScanPrinters() {
+    const netIp = el.scanNetworkIpInput ? el.scanNetworkIpInput.value.trim() : "";
+    if (el.scanPrintersBtn) {
+      el.scanPrintersBtn.disabled = true;
+      el.scanPrintersBtn.textContent = "Skanerlanmoqda...";
+    }
+    if (el.scanIpBtn) el.scanIpBtn.disabled = true;
+    try {
+      const scanRes = await SmartPrintApi.scanPrinters({
+        networkIp: netIp,
+        includeNetworkScan: true,
+        waitAgentSeconds: 3.5,
+      });
+      renderPrinterInventory(
+        scanRes.printers || [],
+        scanRes.discovered_devices || [],
+        scanRes.summary || null
+      );
+      const sum = scanRes.summary || {};
+      const toastKind = (sum.ready_physical_count || 0) > 0 || (sum.unconfigured_hardware_count || 0) > 0 ? "success" : "info";
+      showToast(sum.recommendation || "Printerlarni skanerlash yakunlandi.", toastKind);
+      await loadSystemStatus();
+    } catch (err) {
+      showToast(err.message, "error");
+    } finally {
+      if (el.scanPrintersBtn) {
+        el.scanPrintersBtn.disabled = false;
+        el.scanPrintersBtn.textContent = "Printerlarni skanerlash";
+      }
+      if (el.scanIpBtn) el.scanIpBtn.disabled = false;
+    }
   }
 
   function getStatusBadgeInfo(status) {
@@ -1919,6 +2154,20 @@
     el.savePrinterSettingsBtn.addEventListener("click", () =>
       saveAdminSettingsFromUI("Printer va tizim rejimi saqlandi!")
     );
+    if (el.scanPrintersBtn) {
+      el.scanPrintersBtn.addEventListener("click", handleScanPrinters);
+    }
+    if (el.scanIpBtn) {
+      el.scanIpBtn.addEventListener("click", handleScanPrinters);
+    }
+    if (el.scanNetworkIpInput) {
+      el.scanNetworkIpInput.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          handleScanPrinters();
+        }
+      });
+    }
     if (el.savePaymentSettingsBtn) {
       el.savePaymentSettingsBtn.addEventListener("click", () =>
         saveAdminSettingsFromUI("To'lov kartasi va Telegram bot sozlamalari saqlandi!")

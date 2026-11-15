@@ -646,9 +646,27 @@
             <div class="admin-panel-head">
               <div>
                 <h3>Printer va ish rejimi</h3>
-                <p class="card-desc">Printer ulangach rejimni jonli holatga o'tkazing</p>
+                <p class="card-desc">Printer kabeli ulangach «Printerlarni skanerlash» ni bosing — USB, Wi-Fi/LAN va Raspberry Pi printerlari tekshiriladi</p>
               </div>
+              <button type="button" id="scanPrintersBtn" class="btn btn-primary btn-sm">Printerlarni skanerlash</button>
             </div>
+
+            <div class="scan-toolbar">
+              <input
+                id="scanNetworkIpInput"
+                type="text"
+                class="text-input"
+                placeholder="Ixtiyoriy tarmoq printer IP (masalan: 192.168.1.50)"
+                autocomplete="off"
+              />
+              <button type="button" id="scanIpBtn" class="btn btn-outline btn-sm">IP tekshirish</button>
+            </div>
+
+            <div id="printerScanSummaryBox" class="scan-summary-box hidden"></div>
+            <div id="piAgentStatusBox" class="agent-status-box"></div>
+            <div id="adminPrintersList" class="admin-printers-mini"></div>
+
+            <hr class="admin-divider" />
 
             <div class="form-group">
               <label class="form-label" for="adminPrinterModeSelect">Chop etish rejimi</label>
@@ -669,8 +687,6 @@
               <label class="form-label" for="adminAgentKeyInput">Raspberry Pi Agent kaliti (X-Agent-Key)</label>
               <input id="adminAgentKeyInput" type="text" class="text-input" placeholder="Masalan: kuchli-maxfiy-kalit-kiriting" autocomplete="off" />
             </div>
-            <div id="piAgentStatusBox" class="agent-status-box"></div>
-            <div id="adminPrintersList" class="admin-printers-mini"></div>
 
             <button type="button" id="savePrinterSettingsBtn" class="btn btn-primary">Printer sozlamalarini saqlash</button>
           </div>

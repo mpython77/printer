@@ -306,6 +306,15 @@ def init_db(db_path: Path | None = None) -> None:
             "agent_last_seen": "",
             "agent_hostname": "",
             "agent_printers_json": "[]",
+            "agent_unconfigured_json": "[]",
+            "agent_os_info": "",
+            "agent_last_scan_at": "",
+            "agent_last_scan_id": "",
+            "agent_scan_layers_json": "[]",
+            "agent_pending_scan_id": "",
+            "agent_pending_scan_ip": "",
+            "agent_pending_cmd_json": "",
+            "agent_last_cmd_result_json": "",
             "payment_enabled": "1",
             "payment_card_number": "",
             "payment_card_holder": "",
@@ -342,6 +351,16 @@ def get_token_secret(db_path: Path | None = None) -> str:
     return _get_raw_settings(db_path=db_path)["token_secret"]
 
 
+def _safe_json_loads(raw_text: str | None, fallback: Any) -> Any:
+    if not raw_text:
+        return fallback
+    try:
+        parsed = json.loads(raw_text)
+        return parsed if isinstance(parsed, type(fallback)) else fallback
+    except Exception:
+        return fallback
+
+
 def get_settings(db_path: Path | None = None) -> dict[str, Any]:
     """Return typed pricing, printer configuration, and admin username."""
     raw = _get_raw_settings(db_path=db_path)
@@ -349,12 +368,10 @@ def get_settings(db_path: Path | None = None) -> dict[str, Any]:
         init_db(db_path=db_path)
         raw = _get_raw_settings(db_path=db_path)
 
-    try:
-        agent_printers = json.loads(raw.get("agent_printers_json", "[]") or "[]")
-        if not isinstance(agent_printers, list):
-            agent_printers = []
-    except Exception:
-        agent_printers = []
+    agent_printers = _safe_json_loads(raw.get("agent_printers_json"), [])
+    agent_unconfigured = _safe_json_loads(raw.get("agent_unconfigured_json"), [])
+    agent_scan_layers = _safe_json_loads(raw.get("agent_scan_layers_json"), [])
+    agent_last_cmd_result = _safe_json_loads(raw.get("agent_last_cmd_result_json"), {})
 
     return {
         "admin_username": raw.get("admin_username", "admin"),
@@ -371,6 +388,14 @@ def get_settings(db_path: Path | None = None) -> dict[str, Any]:
         "agent_last_seen": raw.get("agent_last_seen", ""),
         "agent_hostname": raw.get("agent_hostname", ""),
         "agent_printers": agent_printers,
+        "agent_unconfigured_devices": agent_unconfigured,
+        "agent_os_info": raw.get("agent_os_info", ""),
+        "agent_last_scan_at": raw.get("agent_last_scan_at", ""),
+        "agent_last_scan_id": raw.get("agent_last_scan_id", ""),
+        "agent_scan_layers": agent_scan_layers,
+        "agent_pending_scan_id": raw.get("agent_pending_scan_id", ""),
+        "agent_pending_scan_ip": raw.get("agent_pending_scan_ip", ""),
+        "agent_last_cmd_result": agent_last_cmd_result or None,
         "payment_enabled": str(raw.get("payment_enabled", "1")).strip().lower() not in {"0", "false", "no", ""},
         "payment_card_number": raw.get("payment_card_number", ""),
         "payment_card_holder": raw.get("payment_card_holder", ""),
@@ -884,23 +909,9 @@ def get_admin_stats(db_path: Path | None = None) -> dict[str, int]:
     }
 
 
-def record_agent_heartbeat(
-    hostname: str,
-    printers: list[dict[str, Any]],
-    cpu_temp_c: float | None = None,
-    db_path: Path | None = None,
-) -> None:
-    """Record Raspberry Pi print agent heartbeat, hostname, and attached printers."""
-    now = _utc_now_iso()
-    label = hostname.strip() or "raspberry-pi"
-    if cpu_temp_c is not None:
-        label = f"{label} ({cpu_temp_c:.1f}°C)"
+def _upsert_settings_pairs(pairs: list[tuple[str, str]], now: str, db_path: Path | None = None) -> None:
     with get_connection(db_path) as conn:
-        for key, value in (
-            ("agent_last_seen", now),
-            ("agent_hostname", label),
-            ("agent_printers_json", json.dumps(printers)),
-        ):
+        for key, value in pairs:
             conn.execute(
                 """
                 INSERT INTO system_settings (key, value, updated_at)
@@ -909,6 +920,97 @@ def record_agent_heartbeat(
                 """,
                 (key, value, now),
             )
+
+
+def record_agent_heartbeat(
+    hostname: str,
+    printers: list[dict[str, Any]],
+    cpu_temp_c: float | None = None,
+    unconfigured_devices: list[dict[str, Any]] | None = None,
+    os_info: str = "",
+    scan_id: str = "",
+    scan_layers: list[str] | None = None,
+    command_result: dict[str, Any] | None = None,
+    db_path: Path | None = None,
+) -> None:
+    """Record Raspberry Pi print agent heartbeat, hardware printers, unconfigured devices, and scan replies."""
+    now = _utc_now_iso()
+    label = hostname.strip() or "raspberry-pi"
+    if cpu_temp_c is not None:
+        label = f"{label} ({cpu_temp_c:.1f}°C)"
+
+    pairs: list[tuple[str, str]] = [
+        ("agent_last_seen", now),
+        ("agent_hostname", label),
+        ("agent_printers_json", json.dumps(printers)),
+    ]
+    if unconfigured_devices is not None:
+        pairs.append(("agent_unconfigured_json", json.dumps(unconfigured_devices)))
+    if os_info.strip():
+        pairs.append(("agent_os_info", os_info.strip()[:160]))
+    if scan_id.strip():
+        pairs.append(("agent_last_scan_id", scan_id.strip()))
+        pairs.append(("agent_last_scan_at", now))
+    if scan_layers:
+        pairs.append(("agent_scan_layers_json", json.dumps(scan_layers)))
+    if command_result is not None:
+        pairs.append(("agent_last_cmd_result_json", json.dumps(command_result)))
+
+    _upsert_settings_pairs(pairs, now, db_path=db_path)
+
+
+def request_agent_scan(scan_id: str, network_ip: str = "", db_path: Path | None = None) -> None:
+    """Enqueue an immediate deep hardware scan request for the polling Raspberry Pi agent."""
+    now = _utc_now_iso()
+    with QUEUE_LOCK:
+        _upsert_settings_pairs(
+            [
+                ("agent_pending_scan_id", scan_id),
+                ("agent_pending_scan_ip", network_ip.strip()),
+            ],
+            now,
+            db_path=db_path,
+        )
+
+
+def queue_agent_command(cmd: dict[str, Any], db_path: Path | None = None) -> None:
+    """Enqueue a one-shot printer setup command for the polling Raspberry Pi agent."""
+    now = _utc_now_iso()
+    with QUEUE_LOCK:
+        _upsert_settings_pairs(
+            [
+                ("agent_pending_cmd_json", json.dumps(cmd)),
+                ("agent_last_cmd_result_json", ""),
+            ],
+            now,
+            db_path=db_path,
+        )
+
+
+def claim_agent_pending_work(db_path: Path | None = None) -> dict[str, Any]:
+    """Atomically pop any pending scan request or setup command for the agent poll response."""
+    now = _utc_now_iso()
+    with QUEUE_LOCK:
+        raw = _get_raw_settings(db_path=db_path)
+        pending_scan_id = (raw.get("agent_pending_scan_id") or "").strip()
+        pending_scan_ip = (raw.get("agent_pending_scan_ip") or "").strip()
+        pending_cmd = _safe_json_loads(raw.get("agent_pending_cmd_json"), {})
+
+        clear_pairs: list[tuple[str, str]] = []
+        scan_request = None
+        if pending_scan_id:
+            scan_request = {"scan_id": pending_scan_id, "network_ip": pending_scan_ip}
+            clear_pairs.extend([("agent_pending_scan_id", ""), ("agent_pending_scan_ip", "")])
+
+        pending_command = None
+        if pending_cmd:
+            pending_command = pending_cmd
+            clear_pairs.append(("agent_pending_cmd_json", ""))
+
+        if clear_pairs:
+            _upsert_settings_pairs(clear_pairs, now, db_path=db_path)
+
+        return {"scan_request": scan_request, "pending_command": pending_command}
 
 
 def claim_next_agent_job(db_path: Path | None = None) -> dict[str, Any] | None:

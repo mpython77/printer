@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import io
+import json
+import os
+import socket
+import struct
 import subprocess
 import tempfile
 import time
@@ -251,6 +255,27 @@ class ConverterAndSlicerTests(unittest.TestCase):
             self.assertGreater(float(box_4up.width), float(box_4up.height))
 
 
+def _restore_agent_settings(orig_settings: dict) -> None:
+    from backend.database import _upsert_settings_pairs
+
+    _upsert_settings_pairs(
+        [
+            ("agent_last_seen", str(orig_settings.get("agent_last_seen", ""))),
+            ("agent_hostname", str(orig_settings.get("agent_hostname", ""))),
+            ("agent_printers_json", json.dumps(orig_settings.get("agent_printers", []))),
+            ("agent_unconfigured_json", json.dumps(orig_settings.get("agent_unconfigured_devices", []))),
+            ("agent_os_info", str(orig_settings.get("agent_os_info", ""))),
+            ("agent_last_scan_at", str(orig_settings.get("agent_last_scan_at", ""))),
+            ("agent_last_scan_id", str(orig_settings.get("agent_last_scan_id", ""))),
+            ("agent_scan_layers_json", json.dumps(orig_settings.get("agent_scan_layers", []))),
+            ("agent_pending_scan_id", ""),
+            ("agent_pending_scan_ip", ""),
+            ("agent_pending_cmd_json", "{}"),
+        ],
+        "2026-01-01T00:00:00+00:00",
+    )
+
+
 class ApiIntegrationTests(unittest.TestCase):
     def setUp(self) -> None:
         reset_security_limiter()
@@ -271,6 +296,7 @@ class ApiIntegrationTests(unittest.TestCase):
                 "telegram_bot_username": self._orig_settings.get("telegram_bot_username", "@HUMOcardbot"),
             }
         )
+        _restore_agent_settings(self._orig_settings)
 
     def test_system_status_defaults_to_dry_run(self) -> None:
         res = self.client.get("/api/system-status")
@@ -1626,6 +1652,265 @@ class PersistenceAndBackupTests(unittest.TestCase):
         finally:
             if created_name:
                 (BACKUPS_DIR / created_name).unlink(missing_ok=True)
+
+
+class PrinterDiscoveryArchitectureTests(unittest.TestCase):
+    def setUp(self) -> None:
+        reset_security_limiter()
+        self.client = TestClient(app)
+        self._orig_settings = get_settings()
+
+    def tearDown(self) -> None:
+        reset_security_limiter()
+        _restore_agent_settings(self._orig_settings)
+
+    def test_mdns_binary_packet_parser_and_direct_ip_probe(self) -> None:
+        from backend.services.printer_discovery import (
+            _encode_dns_name,
+            parse_mdns_response,
+            probe_network_printer_ip,
+        )
+
+        # Build a valid synthetic mDNS DNS-SD response with PTR, SRV, TXT, and A records
+        inst_name = "Canon G3030._ipp._tcp.local"
+        host_name = "canon-g3030.local"
+        header = struct.pack("!HHHHHH", 0, 0x8400, 0, 4, 0, 0)
+
+        ptr_rdata = _encode_dns_name(inst_name)
+        rr_ptr = _encode_dns_name("_ipp._tcp.local") + struct.pack("!HHIH", 12, 1, 120, len(ptr_rdata)) + ptr_rdata
+
+        srv_rdata = struct.pack("!HHH", 0, 0, 631) + _encode_dns_name(host_name)
+        rr_srv = _encode_dns_name(inst_name) + struct.pack("!HHIH", 33, 1, 120, len(srv_rdata)) + srv_rdata
+
+        txt_items = [b"rp=ipp/print", b"ty=Canon G3030 Series", b"Color=T", b"Duplex=F"]
+        txt_rdata = b"".join(bytes([len(item)]) + item for item in txt_items)
+        rr_txt = _encode_dns_name(inst_name) + struct.pack("!HHIH", 16, 1, 120, len(txt_rdata)) + txt_rdata
+
+        a_rdata = socket.inet_aton("192.168.1.77")
+        rr_a = _encode_dns_name(host_name) + struct.pack("!HHIH", 1, 1, 120, len(a_rdata)) + a_rdata
+
+        pkt = header + rr_ptr + rr_srv + rr_txt + rr_a
+        parsed = parse_mdns_response(pkt, source_ip="192.168.1.77")
+        self.assertEqual(len(parsed), 1)
+        self.assertEqual(parsed[0]["port_or_uri"], "ipp://192.168.1.77:631/ipp/print")
+        self.assertEqual(parsed[0]["name"], "Canon G3030 Series")
+        self.assertIs(parsed[0]["supports_color"], True)
+        self.assertIs(parsed[0]["supports_duplex"], False)
+
+        # SSRF guard: cloud metadata link-local IP rejected
+        blocked = probe_network_printer_ip("169.254.169.254")
+        self.assertTrue(blocked["requested"])
+        self.assertFalse(blocked["found"])
+
+        # Open IPP port detected cleanly
+        with patch("backend.services.printer_discovery._probe_host_printer_ports", return_value=[631, 9100]):
+            ok_probe = probe_network_printer_ip("192.168.1.88")
+        self.assertTrue(ok_probe["found"])
+        self.assertEqual(ok_probe["device"]["port_or_uri"], "ipp://192.168.1.88:631/ipp/print")
+
+    def test_linux_sysfs_usb_cups_backends_and_auto_configure(self) -> None:
+        from backend.services.printer_discovery import (
+            auto_configure_cups_printer,
+            discover_cups_backends,
+            discover_cups_printers,
+            discover_linux_usb_hardware,
+            run_comprehensive_printer_scan,
+        )
+
+        # 1) Sysfs USB Class 07 hardware discovery (avoid ':' in dir name on Windows NTFS)
+        with tempfile.TemporaryDirectory() as tmp:
+            usb_root = Path(tmp) / "usb"
+            dev_dir = usb_root / "1-1"
+            dev_dir.mkdir(parents=True)
+            (dev_dir / "idVendor").write_text("04a9\n", encoding="utf-8")
+            (dev_dir / "idProduct").write_text("1105\n", encoding="utf-8")
+            (dev_dir / "manufacturer").write_text("Canon\n", encoding="utf-8")
+            (dev_dir / "product").write_text("G3030 series\n", encoding="utf-8")
+            (dev_dir / "serial").write_text("CN123456\n", encoding="utf-8")
+            (dev_dir / "bDeviceClass").write_text("07\n", encoding="utf-8")
+
+            usb_devs = discover_linux_usb_hardware(usb_root=usb_root)
+            self.assertEqual(len(usb_devs), 1)
+            self.assertIn("Canon", usb_devs[0]["name"])
+            self.assertIn("CN123456", usb_devs[0]["port_or_uri"])
+
+        # 2) CUPS lpinfo -v + disconnected configured usb:// detection
+        def _fake_cups_cmd(cmd: list[str], timeout: float = 5.0):
+            if cmd[:2] == ["lpinfo", "-v"]:
+                return subprocess.CompletedProcess(
+                    cmd,
+                    0,
+                    stdout=(
+                        "network ipp\n"
+                        "direct usb://Canon/G3030%20series?serial=PLUGGED99\n"
+                        "network ipp://192.168.1.50:631/ipp/print\n"
+                    ),
+                    stderr="",
+                )
+            if cmd[:2] == ["lpstat", "-d"]:
+                return subprocess.CompletedProcess(cmd, 0, stdout="system default destination: Canon_Old\n", stderr="")
+            if cmd[:2] == ["lpstat", "-v"]:
+                return subprocess.CompletedProcess(
+                    cmd, 0, stdout="device for Canon_Old: usb://Canon/G3030%20series?serial=UNPLUGGED00\n", stderr=""
+                )
+            if cmd[:2] == ["lpstat", "-p"]:
+                return subprocess.CompletedProcess(
+                    cmd, 0, stdout="printer Canon_Old is idle.  enabled since Thu 01 Jan 2026\n", stderr=""
+                )
+            if cmd[:2] == ["lpstat", "-W"]:
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        with (
+            patch("backend.services.printer_discovery.discover_windows_printers", return_value=[]),
+            patch("backend.services.printer_discovery.probe_windows_usb_printers", return_value={"ok": False, "devices": []}),
+            patch("backend.services.printer_discovery.discover_linux_usb_hardware", return_value=[]),
+            patch("backend.services.printer_discovery.shutil.which", side_effect=lambda b: f"/usr/bin/{b}" if b in {"lpinfo", "lpstat", "lpadmin", "cupsenable", "cupsaccept"} else None),
+            patch("backend.services.printer_discovery._run_cmd", side_effect=_fake_cups_cmd),
+        ):
+            backends = discover_cups_backends()
+            self.assertTrue(backends["ok"])
+            self.assertEqual(len(backends["devices"]), 2)  # ignores bare `network ipp`
+
+            cups_q = discover_cups_printers(backends_info=backends)
+            self.assertEqual(len(cups_q), 1)
+            self.assertFalse(cups_q[0]["hardware_present"])
+            self.assertTrue(cups_q[0]["is_offline"])
+
+            scan_res = run_comprehensive_printer_scan(settings={}, include_network_scan=False)
+            self.assertEqual(scan_res["summary"]["unconfigured_hardware_count"], 2)
+            self.assertTrue(all(d["can_auto_configure"] for d in scan_res["discovered_devices"]))
+
+        # 3) Security rejection on invalid URI + successful auto_configure_cups_printer
+        with self.assertRaises(ValueError):
+            auto_configure_cups_printer("file:///etc/passwd;rm -rf /", "bad_q")
+
+        def _fake_lpadmin(cmd: list[str], timeout: float = 10.0):
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        with (
+            patch("backend.services.printer_discovery.shutil.which", side_effect=lambda b: f"/usr/sbin/{b}" if b in {"lpadmin", "lpinfo", "cupsenable", "cupsaccept"} else None),
+            patch("backend.services.printer_discovery._run_cmd", side_effect=_fake_lpadmin),
+        ):
+            cfg_res = auto_configure_cups_printer(
+                "usb://Canon/G3030%20series?serial=PLUGGED99",
+                "Canon G3030!",
+                set_default=True,
+            )
+            self.assertTrue(cfg_res["ok"])
+            self.assertEqual(cfg_res["queue_name"], "Canon_G3030")
+            self.assertEqual(cfg_res["model_used"], "everywhere")
+
+    def test_admin_scan_endpoint_pi_agent_handshake_staleness_and_student_privacy(self) -> None:
+        from datetime import datetime, timedelta, timezone
+        from raspberry_pi.pi_print_agent import collect_agent_scan_telemetry
+
+        # Pure-stdlib Pi agent simulated telemetry works out of the box
+        with patch.dict(os.environ, {"TLG_PI_SIMULATE_CUPS": "1"}):
+            tele = collect_agent_scan_telemetry(deep=False)
+        self.assertEqual(len(tele["printers"]), 1)
+        self.assertTrue(tele["printers"][0]["ready_to_print"])
+
+        # Unauthorized scan must return 401
+        self.assertEqual(self.client.post("/api/admin/printers/scan", json={}).status_code, 401)
+
+        login_res = self.client.post(
+            "/api/admin/login",
+            json={"username": "admin", "password": DEFAULT_ADMIN_PASSWORD},
+        )
+        headers = {"Authorization": f"Bearer {login_res.json()['token']}"}
+        dash = self.client.get("/api/admin/dashboard", headers=headers).json()
+        agent_key = dash["settings"]["agent_api_key"]
+
+        # Record a live Pi agent scan report with both ready printer and unconfigured USB device
+        poll_res = self.client.post(
+            "/api/agent/poll",
+            headers={"X-Agent-Key": agent_key},
+            json={
+                "hostname": "pi5-lab",
+                "os_info": "Linux 6.6 (aarch64)",
+                "printers": [
+                    {
+                        "name": "Canon_Pi_Ready",
+                        "is_default": True,
+                        "status_text": "Tayyor (Pi CUPS Idle)",
+                        "is_offline": False,
+                        "jobs_in_queue": 0,
+                        "connection_type": "USB",
+                        "port_or_uri": "usb://Canon/G3030?serial=PI777",
+                        "hardware_present": True,
+                        "ready_to_print": True,
+                    }
+                ],
+                "unconfigured_devices": [
+                    {
+                        "name": "HP LaserJet WiFi",
+                        "status_text": "Yangi tarmoq printer topildi",
+                        "connection_type": "UNCONFIGURED_NETWORK",
+                        "port_or_uri": "ipp://192.168.1.99:631/ipp/print",
+                        "configured": False,
+                        "can_auto_configure": True,
+                    }
+                ],
+                "scan_layers": ["pi_cups", "cups_backends", "linux_usb"],
+            },
+        )
+        self.assertEqual(poll_res.status_code, 200)
+
+        # Public /api/system-status must strip sensitive port_or_uri / host_label from students
+        pub_status = self.client.get("/api/system-status").json()
+        pi_pub = next((p for p in pub_status["printers"] if p["name"] == "Canon_Pi_Ready"), None)
+        self.assertIsNotNone(pi_pub)
+        self.assertEqual(pi_pub["port_or_uri"], "")
+        self.assertEqual(pi_pub["host_label"], "")
+
+        # Admin scan endpoint shows both configured Pi printer & unconfigured HP device cleanly
+        scan_res = self.client.post(
+            "/api/admin/printers/scan",
+            headers=headers,
+            json={"include_network_scan": False, "wait_agent_seconds": 0.0},
+        )
+        self.assertEqual(scan_res.status_code, 200)
+        scan_body = scan_res.json()
+        self.assertTrue(scan_body["summary"]["agent_online"])
+        self.assertGreaterEqual(scan_body["summary"]["ready_physical_count"], 1)
+        self.assertTrue(any(d["name"] == "HP LaserJet WiFi" for d in scan_body["discovered_devices"]))
+
+        # Verify request_agent_scan -> next /api/agent/poll pops scan_request
+        scan_id = get_settings().get("agent_pending_scan_id", "")
+        self.assertTrue(scan_id.startswith("scan_"))
+        poll_next = self.client.post(
+            "/api/agent/poll",
+            headers={"X-Agent-Key": agent_key},
+            json={"hostname": "pi5-lab", "printers": []},
+        ).json()
+        self.assertIsNotNone(poll_next.get("scan_request"))
+        self.assertEqual(poll_next["scan_request"]["scan_id"], scan_id)
+
+        # Stale agent heartbeat (> 30s) marks cached Pi printer offline instead of falsely online
+        old_iso = (datetime.now(timezone.utc) - timedelta(seconds=120)).isoformat()
+        from backend.database import _upsert_settings_pairs
+
+        _upsert_settings_pairs(
+            [
+                ("agent_last_seen", old_iso),
+                (
+                    "agent_printers_json",
+                    '[{"name": "Stale_Pi_Printer", "is_offline": false, "status_text": "Tayyor"}]',
+                ),
+            ],
+            old_iso,
+        )
+        stale_scan = self.client.post(
+            "/api/admin/printers/scan",
+            headers=headers,
+            json={"include_network_scan": False, "wait_agent_seconds": 0.0},
+        ).json()
+        self.assertFalse(stale_scan["summary"]["agent_online"])
+        stale_p = next((p for p in stale_scan["printers"] if p["name"] == "Stale_Pi_Printer"), None)
+        self.assertIsNotNone(stale_p)
+        self.assertTrue(stale_p["is_offline"])
+        self.assertFalse(stale_p["ready_to_print"])
 
 
 if __name__ == "__main__":
