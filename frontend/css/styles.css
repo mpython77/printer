@@ -1964,6 +1964,11 @@ code {
   border-radius: 999px;
 }
 
+.mine-badge.is-other {
+  background: #e2e8f0;
+  color: #334155;
+}
+
 .tag-pill {
   background: var(--surface-subtle);
   border: 1px solid var(--border);
@@ -2018,6 +2023,12 @@ code {
   justify-content: space-between;
   gap: 14px;
   flex-wrap: wrap;
+}
+
+.live-confirm-box.is-locked {
+  background: var(--surface-subtle);
+  border-color: var(--border-strong);
+  color: var(--text);
 }
 
 .live-confirm-text {

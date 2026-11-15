@@ -6,13 +6,14 @@ import base64
 import hashlib
 import hmac
 import json
+import secrets
 import shutil
 import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import Body, Depends, FastAPI, File, Header, HTTPException, UploadFile
+from fastapi import Body, Depends, FastAPI, File, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -154,11 +155,64 @@ def _doc_to_response(doc: dict) -> DocumentResponse:
 CONFIRM_TIMEOUT_SECONDS = 90
 
 
+def _build_device_id(client_token: str, client_ip: str = "", user_agent: str = "") -> str:
+    seed = (client_token or "").strip() or f"{client_ip}:{user_agent}" or "unknown"
+    digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()[:4].upper()
+    return f"#{digest}"
+
+
+def _detect_device_label(user_agent: str, client_hint: str = "", device_id: str = "") -> str:
+    hint = (client_hint or "").strip()
+    if hint:
+        base = hint[:100]
+    else:
+        ua = (user_agent or "").lower()
+        if "iphone" in ua:
+            os_part = "📱 iPhone"
+        elif "ipad" in ua:
+            os_part = "📱 iPad"
+        elif "android" in ua:
+            os_part = "📱 Android Telefon"
+        elif "windows" in ua:
+            os_part = "💻 Windows Kompyuter"
+        elif "macintosh" in ua or "mac os" in ua:
+            os_part = "💻 Mac Kompyuter"
+        elif "linux" in ua:
+            os_part = "💻 Linux Kompyuter"
+        else:
+            os_part = "🖥️ Qurilma"
+
+        if "edg/" in ua:
+            browser = "Edge"
+        elif "chrome/" in ua or "crios/" in ua:
+            browser = "Chrome"
+        elif "firefox/" in ua or "fxios/" in ua:
+            browser = "Firefox"
+        elif "safari/" in ua:
+            browser = "Safari"
+        else:
+            browser = ""
+
+        base = f"{os_part} • {browser}" if browser else os_part
+
+    if device_id and device_id not in base:
+        return f"{base} ({device_id})"
+    return base
+
+
+def _is_job_owner(job: dict, caller_token: str) -> bool:
+    expected = (job.get("client_token") or "").strip()
+    caller = (caller_token or "").strip()
+    return bool(expected and caller and hmac.compare_digest(expected, caller))
+
+
 def _job_to_response(
     job: dict,
     active_job: dict | None = None,
     waiting_jobs: list[dict] | None = None,
     now_ts: float | None = None,
+    caller_token: str = "",
+    include_secret_token: bool = False,
 ) -> PrintJobResponse:
     if active_job is None and waiting_jobs is None and job.get("queue_state") in {
         "ACTIVE_PRINTING",
@@ -170,6 +224,8 @@ def _job_to_response(
     enrich = compute_job_queue_enrichment(
         job, active_job, waiting_jobs or [], now_ts=now_ts
     )
+    dev_id = _build_device_id(job.get("client_token", ""), job.get("client_ip", ""))
+    is_mine = include_secret_token or _is_job_owner(job, caller_token)
     return PrintJobResponse(
         id=job["id"],
         document_id=job["document_id"],
@@ -200,7 +256,11 @@ def _job_to_response(
         pdf_url=f"/api/print-jobs/{job['id']}/pdf",
         original_pdf_url=f"/api/documents/{job['document_id']}/pdf",
         created_at=job["created_at"],
-        client_token=job.get("client_token", ""),
+        client_token=job.get("client_token", "") if is_mine else "",
+        device_id=dev_id,
+        device_label=job.get("device_label") or f"Qurilma ({dev_id})",
+        client_ip=job.get("client_ip", ""),
+        is_mine=is_mine,
         queue_state=job.get("queue_state", "COMPLETED"),
         queue_position=enrich["queue_position"],
         remaining_print_seconds=enrich["remaining_print_seconds"],
@@ -216,8 +276,11 @@ def _job_to_public_item(
     active_job: dict | None,
     waiting_jobs: list[dict],
     now_ts: float,
+    caller_token: str = "",
 ) -> QueuePublicJobItem:
     enrich = compute_job_queue_enrichment(job, active_job, waiting_jobs, now_ts=now_ts)
+    dev_id = _build_device_id(job.get("client_token", ""), job.get("client_ip", ""))
+    is_mine = _is_job_owner(job, caller_token)
     return QueuePublicJobItem(
         id=job["id"],
         student_name=job.get("student_name") or "Ismsiz foydalanuvchi",
@@ -238,7 +301,11 @@ def _job_to_public_item(
         remaining_print_seconds=enrich["remaining_print_seconds"],
         confirm_remaining_seconds=enrich["confirm_remaining_seconds"],
         estimated_wait_seconds=enrich["estimated_wait_seconds"],
-        client_token=job.get("client_token", ""),
+        is_mine=is_mine,
+        device_id=dev_id,
+        device_label=job.get("device_label") or f"Qurilma ({dev_id})",
+        printer_name=job.get("printer_name") or "",
+        printer_mode=job.get("printer_mode") or "",
         created_at=job["created_at"],
         started_at=job.get("started_at", ""),
         completed_at=job.get("completed_at", ""),
@@ -321,10 +388,10 @@ def _tick_and_advance_queue(now_ts: float | None = None) -> tuple[dict | None, l
 def _authorize_client_action(job: dict, provided_token: str) -> None:
     expected = (job.get("client_token") or "").strip()
     provided = (provided_token or "").strip()
-    if expected and provided and not hmac.compare_digest(expected, provided):
+    if expected and (not provided or not hmac.compare_digest(expected, provided)):
         raise HTTPException(
             status_code=403,
-            detail="Faqat ushbu buyurtmani yuborgan foydalanuvchi bu amalni bajarishi mumkin.",
+            detail="Faqat ushbu buyurtmani yuborgan qurilma/foydalanuvchi bu amalni bajarishi mumkin.",
         )
 
 
@@ -479,7 +546,11 @@ def serve_document_pdf(doc_id: str) -> FileResponse:
 
 
 @app.post("/api/print-jobs", response_model=PrintJobResponse)
-def submit_print_job(payload: PrintJobCreateRequest) -> PrintJobResponse:
+def submit_print_job(
+    payload: PrintJobCreateRequest,
+    request: Request,
+    x_client_token: str = Header(default=""),
+) -> PrintJobResponse:
     doc = get_document(payload.document_id)
     if not doc:
         raise HTTPException(status_code=404, detail="Hujjat topilmadi.")
@@ -569,12 +640,24 @@ def submit_print_job(payload: PrintJobCreateRequest) -> PrintJobResponse:
         for seg in metrics.get("segments", [])
     ]
 
+    effective_token = (payload.client_token or x_client_token or "").strip() or f"stu_{secrets.token_hex(10)}"
+    client_ip = (
+        request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+        or (request.client.host if request.client else "")
+        or "127.0.0.1"
+    )
+    user_agent = request.headers.get("user-agent", "")
+    dev_id = _build_device_id(effective_token, client_ip, user_agent)
+    dev_label = _detect_device_label(user_agent, payload.device_label, dev_id)
+
     job_stub = {
         "id": job_id,
         "document_id": doc["id"],
         "original_filename": doc["original_filename"],
         "student_name": payload.student_name.strip(),
-        "client_token": payload.client_token.strip(),
+        "client_token": effective_token,
+        "device_label": dev_label,
+        "client_ip": client_ip,
         "selected_pages": selected_pages,
         "page_range_text": range_text,
         "rotations": payload.rotations,
@@ -603,7 +686,18 @@ def submit_print_job(payload: PrintJobCreateRequest) -> PrintJobResponse:
         active_job, waiting_jobs = _tick_and_advance_queue(now_ts=now)
         live_settings = get_settings()
         adapter = get_active_printer_adapter(mode=live_settings["printer_mode"])
-        target_printer = payload.printer_name.strip() or live_settings["default_printer_name"]
+        default_fallback = (
+            "Raspberry Pi CUPS"
+            if adapter.mode_name == "REMOTE_AGENT"
+            else "Virtual Test Printer"
+            if adapter.mode_name == "DRY_RUN"
+            else "Standart Printer"
+        )
+        target_printer = (
+            payload.printer_name.strip()
+            or live_settings["default_printer_name"]
+            or default_fallback
+        )
         job_stub["printer_name"] = target_printer
         job_stub["printer_mode"] = adapter.mode_name
 
@@ -618,7 +712,12 @@ def submit_print_job(payload: PrintJobCreateRequest) -> PrintJobResponse:
             job_stub["confirm_deadline_ts"] = 0.0
             saved_job = create_print_job(job_stub)
             return _job_to_response(
-                saved_job, active_job=saved_job, waiting_jobs=waiting_jobs, now_ts=now
+                saved_job,
+                active_job=saved_job,
+                waiting_jobs=waiting_jobs,
+                now_ts=now,
+                caller_token=effective_token,
+                include_secret_token=True,
             )
 
         pos = len(waiting_jobs) + 1
@@ -633,13 +732,22 @@ def submit_print_job(payload: PrintJobCreateRequest) -> PrintJobResponse:
         saved_job = create_print_job(job_stub)
         updated_waiting = list_waiting_queue_jobs()
         return _job_to_response(
-            saved_job, active_job=active_job, waiting_jobs=updated_waiting, now_ts=now
+            saved_job,
+            active_job=active_job,
+            waiting_jobs=updated_waiting,
+            now_ts=now,
+            caller_token=effective_token,
+            include_secret_token=True,
         )
 
 
 @app.get("/api/queue/live", response_model=LiveQueueStatusResponse)
-def get_live_print_queue() -> LiveQueueStatusResponse:
+def get_live_print_queue(
+    x_client_token: str = Header(default=""),
+    client_token: str = "",
+) -> LiveQueueStatusResponse:
     now = time.time()
+    caller_token = (x_client_token or client_token or "").strip()
     active_job, waiting_jobs = _tick_and_advance_queue(now_ts=now)
     recent_jobs = list_recent_completed_jobs(limit=5)
     settings = get_settings()
@@ -661,16 +769,19 @@ def get_live_print_queue() -> LiveQueueStatusResponse:
         printer_busy=active_job is not None,
         printer_state=printer_state,
         printer_mode=settings["printer_mode"],
+        default_printer_name=settings.get("default_printer_name") or "Standart Printer",
         active_job=(
-            _job_to_public_item(active_job, active_job, waiting_jobs, now)
+            _job_to_public_item(active_job, active_job, waiting_jobs, now, caller_token=caller_token)
             if active_job
             else None
         ),
         waiting_jobs=[
-            _job_to_public_item(w, active_job, waiting_jobs, now) for w in waiting_jobs
+            _job_to_public_item(w, active_job, waiting_jobs, now, caller_token=caller_token)
+            for w in waiting_jobs
         ],
         recent_jobs=[
-            _job_to_public_item(r, active_job, waiting_jobs, now) for r in recent_jobs
+            _job_to_public_item(r, active_job, waiting_jobs, now, caller_token=caller_token)
+            for r in recent_jobs
         ],
         waiting_count=len(waiting_jobs),
         total_estimated_wait_seconds=total_wait,
@@ -682,18 +793,22 @@ def get_live_print_queue() -> LiveQueueStatusResponse:
 def confirm_job_printed(
     job_id: str,
     payload: JobConfirmRequest | None = Body(default=None),
+    x_client_token: str = Header(default=""),
 ) -> PrintJobResponse:
     with QUEUE_LOCK:
         now = time.time()
         job = get_print_job(job_id)
         if not job:
             raise HTTPException(status_code=404, detail="Chop etish buyurtmasi topilmadi.")
-        _authorize_client_action(job, payload.client_token if payload else "")
+        caller_token = ((payload.client_token if payload else "") or x_client_token or "").strip()
+        _authorize_client_action(job, caller_token)
 
         q_state = job.get("queue_state")
         if q_state == "COMPLETED":
             active, waiting = _tick_and_advance_queue(now_ts=now)
-            return _job_to_response(job, active_job=active, waiting_jobs=waiting, now_ts=now)
+            return _job_to_response(
+                job, active_job=active, waiting_jobs=waiting, now_ts=now, caller_token=caller_token
+            )
         if q_state not in {"ACTIVE_PRINTING", "AWAITING_CONFIRMATION"}:
             raise HTTPException(
                 status_code=400,
@@ -713,20 +828,24 @@ def confirm_job_printed(
         )
         assert updated is not None
         active, waiting = _tick_and_advance_queue(now_ts=now)
-        return _job_to_response(updated, active_job=active, waiting_jobs=waiting, now_ts=now)
+        return _job_to_response(
+            updated, active_job=active, waiting_jobs=waiting, now_ts=now, caller_token=caller_token
+        )
 
 
 @app.post("/api/print-jobs/{job_id}/extend", response_model=PrintJobResponse)
 def extend_job_print_time(
     job_id: str,
     payload: JobConfirmRequest | None = Body(default=None),
+    x_client_token: str = Header(default=""),
 ) -> PrintJobResponse:
     with QUEUE_LOCK:
         now = time.time()
         job = get_print_job(job_id)
         if not job:
             raise HTTPException(status_code=404, detail="Chop etish buyurtmasi topilmadi.")
-        _authorize_client_action(job, payload.client_token if payload else "")
+        caller_token = ((payload.client_token if payload else "") or x_client_token or "").strip()
+        _authorize_client_action(job, caller_token)
         if job.get("queue_state") not in {"ACTIVE_PRINTING", "AWAITING_CONFIRMATION"}:
             raise HTTPException(
                 status_code=400,
@@ -746,20 +865,24 @@ def extend_job_print_time(
         )
         assert updated is not None
         waiting = list_waiting_queue_jobs()
-        return _job_to_response(updated, active_job=updated, waiting_jobs=waiting, now_ts=now)
+        return _job_to_response(
+            updated, active_job=updated, waiting_jobs=waiting, now_ts=now, caller_token=caller_token
+        )
 
 
 @app.post("/api/print-jobs/{job_id}/cancel", response_model=PrintJobResponse)
 def cancel_print_job(
     job_id: str,
     payload: JobConfirmRequest | None = Body(default=None),
+    x_client_token: str = Header(default=""),
 ) -> PrintJobResponse:
     with QUEUE_LOCK:
         now = time.time()
         job = get_print_job(job_id)
         if not job:
             raise HTTPException(status_code=404, detail="Chop etish buyurtmasi topilmadi.")
-        _authorize_client_action(job, payload.client_token if payload else "")
+        caller_token = ((payload.client_token if payload else "") or x_client_token or "").strip()
+        _authorize_client_action(job, caller_token)
         if job.get("queue_state") == "COMPLETED":
             raise HTTPException(
                 status_code=400,
@@ -778,7 +901,9 @@ def cancel_print_job(
         )
         assert updated is not None
         active, waiting = _tick_and_advance_queue(now_ts=now)
-        return _job_to_response(updated, active_job=active, waiting_jobs=waiting, now_ts=now)
+        return _job_to_response(
+            updated, active_job=active, waiting_jobs=waiting, now_ts=now, caller_token=caller_token
+        )
 
 
 @app.get("/api/print-jobs/{job_id}/pdf")
@@ -818,13 +943,20 @@ def serve_job_segment_pdf(job_id: str, segment_index: int) -> FileResponse:
 
 
 @app.get("/api/print-jobs/{job_id}/status")
-def get_job_live_status(job_id: str) -> dict:
+def get_job_live_status(
+    job_id: str,
+    x_client_token: str = Header(default=""),
+    client_token: str = "",
+) -> dict:
     with QUEUE_LOCK:
         now = time.time()
         active_job, waiting_jobs = _tick_and_advance_queue(now_ts=now)
         job = get_print_job(job_id)
         if not job:
             raise HTTPException(status_code=404, detail="Buyurtma topilmadi.")
+    caller_token = (x_client_token or client_token or "").strip()
+    dev_id = _build_device_id(job.get("client_token", ""), job.get("client_ip", ""))
+    is_mine = _is_job_owner(job, caller_token)
     if job["printer_mode"] == "WINDOWS_SPOOLER":
         spooler = get_spooler_status(job["printer_name"], document_title=job_id)
     elif job["printer_mode"] == "LINUX_CUPS":
@@ -836,7 +968,11 @@ def get_job_live_status(job_id: str) -> dict:
         "job_id": job["id"],
         "status": job["status"],
         "status_message": job["status_message"],
+        "printer_name": job["printer_name"],
         "printer_mode": job["printer_mode"],
+        "device_id": dev_id,
+        "device_label": job.get("device_label") or f"Qurilma ({dev_id})",
+        "is_mine": is_mine,
         "queue_state": job.get("queue_state", "COMPLETED"),
         "queue_position": enrich["queue_position"],
         "remaining_print_seconds": enrich["remaining_print_seconds"],

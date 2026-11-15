@@ -633,29 +633,65 @@ class ApiIntegrationTests(unittest.TestCase):
                 self.assertEqual(resp.status_code, 200, f"Student {idx} failed: {resp.text}")
                 created_jobs.append((client_tok, resp.json()))
 
-            live_resp = self.client.get("/api/queue/live")
+            token_by_job_id = {job_data["id"]: tok for tok, job_data in created_jobs}
+
+            live_unscoped = self.client.get("/api/queue/live")
+            self.assertEqual(live_unscoped.status_code, 200)
+            live_pub = live_unscoped.json()
+            self.assertTrue(live_pub["printer_busy"])
+            self.assertEqual(live_pub["printer_state"], "PRINTING")
+            self.assertIsNotNone(live_pub["active_job"])
+            self.assertNotIn("client_token", live_pub["active_job"])
+            self.assertFalse(live_pub["active_job"]["is_mine"])
+            self.assertTrue(live_pub["active_job"]["device_id"].startswith("#"))
+            self.assertTrue(live_pub["active_job"]["device_label"])
+            self.assertTrue(live_pub["active_job"]["printer_name"])
+
+            active_id = live_pub["active_job"]["id"]
+            active_token = token_by_job_id[active_id]
+            first_waiting = live_pub["waiting_jobs"][0]
+            last_waiting = live_pub["waiting_jobs"][-1]
+            other_token = token_by_job_id[first_waiting["id"]]
+
+            live_resp = self.client.get(
+                "/api/queue/live", headers={"X-Client-Token": active_token}
+            )
             self.assertEqual(live_resp.status_code, 200)
             live = live_resp.json()
-            self.assertTrue(live["printer_busy"])
-            self.assertEqual(live["printer_state"], "PRINTING")
-            self.assertIsNotNone(live["active_job"])
             self.assertEqual(live["active_job"]["queue_state"], "ACTIVE_PRINTING")
             self.assertEqual(live["active_job"]["queue_position"], 0)
+            self.assertTrue(live["active_job"]["is_mine"])
             self.assertEqual(live["waiting_count"], 9)
             self.assertEqual(len(live["waiting_jobs"]), 9)
             for expected_pos, w_item in enumerate(live["waiting_jobs"], start=1):
                 self.assertEqual(w_item["queue_position"], expected_pos)
                 self.assertEqual(w_item["queue_state"], "WAITING_IN_QUEUE")
                 self.assertGreater(w_item["estimated_wait_seconds"], 0)
+                self.assertFalse(w_item["is_mine"])
+                self.assertTrue(w_item["device_id"].startswith("#"))
+                self.assertTrue(w_item["device_label"])
+                self.assertTrue(w_item["printer_name"])
 
-            active_job = live["active_job"]
-            active_id = active_job["id"]
-            active_token = active_job["client_token"]
-            first_waiting = live["waiting_jobs"][0]
-            last_waiting = live["waiting_jobs"][-1]
+            # Verify strict per-device lock: other users or empty token get 403 Forbidden
+            for bad_body in ({"client_token": other_token}, {"client_token": ""}):
+                self.assertEqual(
+                    self.client.post(f"/api/print-jobs/{active_id}/confirm", json=bad_body).status_code,
+                    403,
+                )
+                self.assertEqual(
+                    self.client.post(
+                        f"/api/print-jobs/{active_id}/extend",
+                        json={**bad_body, "extra_seconds": 15},
+                    ).status_code,
+                    403,
+                )
+                self.assertEqual(
+                    self.client.post(f"/api/print-jobs/{active_id}/cancel", json=bad_body).status_code,
+                    403,
+                )
 
-            # Test /extend increases remaining_print_seconds
-            before_rem = active_job["remaining_print_seconds"]
+            # Test /extend with owner's token increases remaining_print_seconds
+            before_rem = live["active_job"]["remaining_print_seconds"]
             extend_resp = self.client.post(
                 f"/api/print-jobs/{active_id}/extend",
                 json={"client_token": active_token, "extra_seconds": 15},
@@ -666,10 +702,10 @@ class ApiIntegrationTests(unittest.TestCase):
                 before_rem + 10,
             )
 
-            # Test /cancel removes the last waiting job cleanly
+            # Test /cancel removes the last waiting job cleanly using its own token
             cancel_resp = self.client.post(
                 f"/api/print-jobs/{last_waiting['id']}/cancel",
-                json={"client_token": last_waiting["client_token"]},
+                json={"client_token": token_by_job_id[last_waiting["id"]]},
             )
             self.assertEqual(cancel_resp.status_code, 200)
             self.assertEqual(cancel_resp.json()["status"], "CANCELLED")
@@ -686,15 +722,19 @@ class ApiIntegrationTests(unittest.TestCase):
             self.assertEqual(confirmed["status"], "COMPLETED")
             self.assertEqual(confirmed["queue_state"], "COMPLETED")
 
-            promoted_live = self.client.get("/api/queue/live").json()
+            promoted_live = self.client.get(
+                "/api/queue/live", headers={"X-Client-Token": other_token}
+            ).json()
             self.assertTrue(promoted_live["printer_busy"])
             self.assertIsNotNone(promoted_live["active_job"])
             self.assertEqual(promoted_live["active_job"]["id"], first_waiting["id"])
             self.assertEqual(promoted_live["active_job"]["queue_state"], "ACTIVE_PRINTING")
             self.assertEqual(promoted_live["active_job"]["queue_position"], 0)
+            self.assertTrue(promoted_live["active_job"]["is_mine"])
             self.assertEqual(promoted_live["waiting_count"], 7)
             for idx_pos, w_item in enumerate(promoted_live["waiting_jobs"], start=1):
                 self.assertEqual(w_item["queue_position"], idx_pos)
+                self.assertFalse(w_item["is_mine"])
         finally:
             for _, job_data in created_jobs:
                 self.client.delete(f"/api/admin/print-jobs/{job_data['id']}", headers=headers)

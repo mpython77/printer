@@ -122,6 +122,8 @@ def init_db(db_path: Path | None = None) -> None:
                 output_pdf_path TEXT NOT NULL,
                 created_at TEXT NOT NULL,
                 client_token TEXT NOT NULL DEFAULT '',
+                device_label TEXT NOT NULL DEFAULT '',
+                client_ip TEXT NOT NULL DEFAULT '',
                 queue_state TEXT NOT NULL DEFAULT 'COMPLETED',
                 started_at TEXT NOT NULL DEFAULT '',
                 printing_until_ts REAL NOT NULL DEFAULT 0,
@@ -139,6 +141,8 @@ def init_db(db_path: Path | None = None) -> None:
             "color_sheets": "INTEGER NOT NULL DEFAULT 0",
             "segments_json": "TEXT NOT NULL DEFAULT '[]'",
             "client_token": "TEXT NOT NULL DEFAULT ''",
+            "device_label": "TEXT NOT NULL DEFAULT ''",
+            "client_ip": "TEXT NOT NULL DEFAULT ''",
             "queue_state": "TEXT NOT NULL DEFAULT 'COMPLETED'",
             "started_at": "TEXT NOT NULL DEFAULT ''",
             "printing_until_ts": "REAL NOT NULL DEFAULT 0",
@@ -379,6 +383,8 @@ def _row_to_job(row: sqlite3.Row) -> dict[str, Any]:
     data["color_sheets"] = int(data.get("color_sheets") or 0)
     data["estimated_seconds"] = int(data.get("estimated_seconds") or 0)
     data["client_token"] = str(data.get("client_token") or "")
+    data["device_label"] = str(data.get("device_label") or "")
+    data["client_ip"] = str(data.get("client_ip") or "")
     data["queue_state"] = str(data.get("queue_state") or "COMPLETED")
     data["started_at"] = str(data.get("started_at") or "")
     data["printing_until_ts"] = float(data.get("printing_until_ts") or 0.0)
@@ -402,9 +408,9 @@ def create_print_job(job: dict[str, Any], db_path: Path | None = None) -> dict[s
                 estimated_seconds, color_pages_json, bw_sheets,
                 color_sheets, segments_json, printer_name, printer_mode,
                 status, status_message, output_pdf_path, created_at,
-                client_token, queue_state, started_at,
+                client_token, device_label, client_ip, queue_state, started_at,
                 printing_until_ts, confirm_deadline_ts, completed_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 job["id"],
@@ -436,6 +442,8 @@ def create_print_job(job: dict[str, Any], db_path: Path | None = None) -> dict[s
                 job["output_pdf_path"],
                 created_at,
                 job.get("client_token", ""),
+                job.get("device_label", ""),
+                job.get("client_ip", ""),
                 job.get("queue_state", "COMPLETED"),
                 job.get("started_at", ""),
                 float(job.get("printing_until_ts", 0.0) or 0.0),

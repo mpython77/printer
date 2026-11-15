@@ -17,6 +17,26 @@ window.SmartPrintApi = (() => {
     return token;
   }
 
+  function getDeviceLabel() {
+    const ua = (typeof navigator !== "undefined" && navigator.userAgent) || "";
+    const l = ua.toLowerCase();
+    let osPart = "🖥️ Qurilma";
+    if (l.includes("iphone")) osPart = "📱 iPhone";
+    else if (l.includes("ipad")) osPart = "📱 iPad";
+    else if (l.includes("android")) osPart = "📱 Android Telefon";
+    else if (l.includes("windows")) osPart = "💻 Windows Kompyuter";
+    else if (l.includes("macintosh") || l.includes("mac os")) osPart = "💻 Mac Kompyuter";
+    else if (l.includes("linux")) osPart = "💻 Linux Kompyuter";
+
+    let browser = "";
+    if (l.includes("edg/")) browser = "Edge";
+    else if (l.includes("chrome/") || l.includes("crios/")) browser = "Chrome";
+    else if (l.includes("firefox/") || l.includes("fxios/")) browser = "Firefox";
+    else if (l.includes("safari/")) browser = "Safari";
+
+    return browser ? `${osPart} • ${browser}` : osPart;
+  }
+
   function getAdminToken() {
     return sessionStorage.getItem(TOKEN_KEY) || "";
   }
@@ -73,37 +93,56 @@ window.SmartPrintApi = (() => {
   }
 
   async function createPrintJob(payload) {
+    const tok = getClientToken();
     const res = await fetch("/api/print-jobs", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        "X-Client-Token": tok,
+      },
       body: JSON.stringify({
-        client_token: getClientToken(),
+        client_token: tok,
+        device_label: getDeviceLabel(),
         ...payload,
       }),
+    });
+    const data = await handleResponse(res);
+    if (data && data.client_token) {
+      localStorage.setItem(CLIENT_TOKEN_KEY, data.client_token);
+    }
+    return data;
+  }
+
+  async function getLiveQueue() {
+    const res = await fetch("/api/queue/live", {
+      headers: { "X-Client-Token": getClientToken() },
     });
     return handleResponse(res);
   }
 
-  async function getLiveQueue() {
-    const res = await fetch("/api/queue/live");
-    return handleResponse(res);
-  }
-
   async function confirmJobPrinted(jobId) {
+    const tok = getClientToken();
     const res = await fetch(`/api/print-jobs/${encodeURIComponent(jobId)}/confirm`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ client_token: getClientToken() }),
+      headers: {
+        "Content-Type": "application/json",
+        "X-Client-Token": tok,
+      },
+      body: JSON.stringify({ client_token: tok }),
     });
     return handleResponse(res);
   }
 
   async function extendJobTime(jobId, extraSeconds = 15) {
+    const tok = getClientToken();
     const res = await fetch(`/api/print-jobs/${encodeURIComponent(jobId)}/extend`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        "X-Client-Token": tok,
+      },
       body: JSON.stringify({
-        client_token: getClientToken(),
+        client_token: tok,
         extra_seconds: extraSeconds,
       }),
     });
@@ -111,10 +150,14 @@ window.SmartPrintApi = (() => {
   }
 
   async function cancelPrintJob(jobId) {
+    const tok = getClientToken();
     const res = await fetch(`/api/print-jobs/${encodeURIComponent(jobId)}/cancel`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ client_token: getClientToken() }),
+      headers: {
+        "Content-Type": "application/json",
+        "X-Client-Token": tok,
+      },
+      body: JSON.stringify({ client_token: tok }),
     });
     return handleResponse(res);
   }

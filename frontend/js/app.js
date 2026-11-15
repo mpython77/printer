@@ -832,6 +832,14 @@
           <strong>${escapeHtml(job.student_name || "Ko'rsatilmagan")}</strong>
         </div>
         <div class="spec-box">
+          <span>Qurilma</span>
+          <strong>${escapeHtml(job.device_label || job.device_id || "Joriy brauzer")}</strong>
+        </div>
+        <div class="spec-box">
+          <span>Printer</span>
+          <strong>${escapeHtml(job.printer_name || job.printer_mode || "Standart")}</strong>
+        </div>
+        <div class="spec-box">
           <span>Tanlangan betlar</span>
           <strong>${escapeHtml(job.page_range_text)} (${job.selected_page_count} bet)</strong>
         </div>
@@ -967,20 +975,23 @@
 
     if (q.active_job) {
       const act = q.active_job;
-      const isMine = !act.client_token || act.client_token === myToken;
+      const isMine = Boolean(act.is_mine);
       const totalSec = Math.max(1, parseInt(act.estimated_seconds, 10) || 5);
       const remSec = Math.max(0, parseInt(act.remaining_print_seconds, 10) || 0);
       const pct =
         act.queue_state === "AWAITING_CONFIRMATION"
           ? 100
           : Math.max(5, Math.min(100, Math.round(((totalSec - remSec) / totalSec) * 100)));
+      const printerLabel = act.printer_name || q.default_printer_name || "Printer";
 
       el.liveActiveJobBox.innerHTML = `
         <div class="live-active-main">
           <div class="live-active-info">
             <div class="live-active-who">
               <strong>${escapeHtml(act.student_name)}</strong>
-              ${isMine ? `<span class="mine-badge">Siz</span>` : ""}
+              <span class="mine-badge ${isMine ? "" : "is-other"}">${isMine ? "Sizning qurilmangiz" : "Boshqa foydalanuvchi"}</span>
+              <span class="tag-pill">${escapeHtml(act.device_label || act.device_id || "Qurilma")}</span>
+              <span class="tag-pill">🖨️ ${escapeHtml(printerLabel)}</span>
               <span class="tag-pill">${act.physical_sheets} varaq</span>
               <span class="tag-pill">${escapeHtml(formatColorLabel(act))}</span>
             </div>
@@ -1002,6 +1013,7 @@
       `;
       el.liveActiveJobBox.classList.remove("hidden");
 
+      el.liveConfirmPrompt.classList.remove("is-locked");
       if (isMine && act.queue_state === "AWAITING_CONFIRMATION") {
         el.liveConfirmPrompt.innerHTML = `
           <div class="live-confirm-text">
@@ -1037,13 +1049,20 @@
         el.liveConfirmPrompt.classList.remove("hidden");
         attachQueueActionHandlers(el.liveConfirmPrompt);
       } else {
-        el.liveConfirmPrompt.classList.add("hidden");
-        el.liveConfirmPrompt.innerHTML = "";
+        el.liveConfirmPrompt.innerHTML = `
+          <div class="live-confirm-text">
+            <strong>🔒 Tasdiqlash faqat ushbu buyurtma egasiga (${escapeHtml(act.student_name)} • ${escapeHtml(act.device_label || act.device_id)}) ko'rinadi.</strong>
+            <span>Boshqa qurilmalar uni tasdiqlay olmaydi — chop etish yakunlangach navbat sizga avtomatik o'tadi.</span>
+          </div>
+        `;
+        el.liveConfirmPrompt.classList.add("is-locked");
+        el.liveConfirmPrompt.classList.remove("hidden");
       }
     } else {
       el.liveActiveJobBox.classList.add("hidden");
       el.liveActiveJobBox.innerHTML = "";
       el.liveConfirmPrompt.classList.add("hidden");
+      el.liveConfirmPrompt.classList.remove("is-locked");
       el.liveConfirmPrompt.innerHTML = "";
     }
 
@@ -1051,7 +1070,8 @@
     if (q.waiting_jobs && q.waiting_jobs.length) {
       el.liveWaitingList.innerHTML = q.waiting_jobs
         .map((w) => {
-          const isMine = !w.client_token || w.client_token === myToken;
+          const isMine = Boolean(w.is_mine);
+          const wPrinter = w.printer_name || q.default_printer_name || "Printer";
           return `
             <div class="live-queue-row ${isMine ? "is-mine" : ""}">
               <div class="live-row-left">
@@ -1059,6 +1079,7 @@
                 <div class="live-row-info">
                   <strong>${escapeHtml(w.student_name)} ${isMine ? `<span class="mine-badge">Siz</span>` : ""}</strong>
                   <span>${escapeHtml(w.original_filename)} • ${w.physical_sheets} varaq • ${escapeHtml(formatColorLabel(w))}</span>
+                  <span>${escapeHtml(w.device_label || w.device_id)} • 🖨️ ${escapeHtml(wPrinter)}</span>
                 </div>
               </div>
               <div class="live-row-right">
@@ -1087,6 +1108,7 @@
               <div class="live-row-info">
                 <strong>${escapeHtml(r.student_name)}</strong>
                 <span>${escapeHtml(r.original_filename)} • ${r.physical_sheets} varaq</span>
+                <span>${escapeHtml(r.device_label || r.device_id)} • 🖨️ ${escapeHtml(r.printer_name || q.default_printer_name || "Printer")}</span>
               </div>
             </div>
             <div class="live-row-right">
@@ -1305,6 +1327,8 @@
             <div class="queue-meta">
               <span class="tag-pill">${escapeHtml(formatDateTime(job.created_at))}</span>
               <span class="tag-pill">O'quvchi: ${escapeHtml(job.student_name || "Ko'rsatilmagan")}</span>
+              <span class="tag-pill">Qurilma: ${escapeHtml(job.device_label || job.device_id || "Noma'lum")} (${escapeHtml(job.client_ip || "local")})</span>
+              <span class="tag-pill">🖨️ Printer: ${escapeHtml(job.printer_name || job.printer_mode)}</span>
               <span class="tag-pill">Betlar: ${escapeHtml(job.page_range_text)} (${job.selected_page_count} bet)</span>
               <span class="tag-pill">${job.copies} nusxa • ${escapeHtml(jobColorLabel)} • ${job.duplex === "duplex" ? "2 tomonlama" : "1 tomonlama"} • ${job.pages_per_sheet}x</span>
               <span class="tag-pill">${job.physical_sheets} varaq</span>

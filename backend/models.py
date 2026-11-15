@@ -33,6 +33,7 @@ class PrintJobCreateRequest(BaseModel):
     student_name: str = Field(default="", max_length=120)
     printer_name: str = Field(default="", max_length=200)
     client_token: str = Field(default="", max_length=120)
+    device_label: str = Field(default="", max_length=160)
 
 
 class PrintSegmentInfo(BaseModel):
@@ -75,6 +76,10 @@ class PrintJobResponse(BaseModel):
     original_pdf_url: str
     created_at: str
     client_token: str = ""
+    device_id: str = ""
+    device_label: str = ""
+    client_ip: str = ""
+    is_mine: bool = False
     queue_state: str = "COMPLETED"
     queue_position: int = 0
     remaining_print_seconds: int = 0
@@ -199,7 +204,11 @@ class QueuePublicJobItem(BaseModel):
     remaining_print_seconds: int = 0
     confirm_remaining_seconds: int = 0
     estimated_wait_seconds: int = 0
-    client_token: str = ""
+    is_mine: bool = False
+    device_id: str = ""
+    device_label: str = ""
+    printer_name: str = ""
+    printer_mode: str = ""
     created_at: str
     started_at: str = ""
     completed_at: str = ""
@@ -209,6 +218,7 @@ class LiveQueueStatusResponse(BaseModel):
     printer_busy: bool
     printer_state: Literal["IDLE", "PRINTING", "AWAITING_CONFIRMATION"]
     printer_mode: str
+    default_printer_name: str = ""
     active_job: QueuePublicJobItem | None = None
     waiting_jobs: list[QueuePublicJobItem] = Field(default_factory=list)
     recent_jobs: list[QueuePublicJobItem] = Field(default_factory=list)
