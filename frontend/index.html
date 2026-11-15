@@ -61,6 +61,47 @@
     <main class="main-content">
       <!-- PUBLIC STUDENT PORTAL -->
       <section id="studentView" class="view-section is-active">
+        <!-- Live Multi-User Printer & FIFO Queue Monitor -->
+        <div id="liveQueueCard" class="live-queue-card is-idle">
+          <div class="live-queue-top">
+            <div class="live-queue-status-wrap">
+              <span id="livePrinterStateBadge" class="live-state-pill is-idle">
+                <span class="live-state-dot"></span>
+                <span id="livePrinterStateText">Printer BO'SH — Chop etishga tayyor</span>
+              </span>
+              <span id="liveQueueMetaText" class="live-queue-meta-text">
+                Navbatda: 0 ta foydalanuvchi
+              </span>
+            </div>
+            <button type="button" id="toggleQueueDetailsBtn" class="btn btn-ghost btn-sm hidden">
+              Tafsilotlar
+            </button>
+          </div>
+
+          <!-- Active Print Job Banner -->
+          <div id="liveActiveJobBox" class="live-active-box hidden"></div>
+
+          <!-- Student Confirmation Banner (when current student's job finished printing) -->
+          <div id="liveConfirmPrompt" class="live-confirm-box hidden"></div>
+
+          <!-- Waiting FIFO Queue + Recent Activity -->
+          <div id="liveQueueColumns" class="live-queue-columns hidden">
+            <div class="live-col">
+              <div class="live-col-head">
+                <h4>Kutish navbati (FIFO)</h4>
+                <span id="liveWaitingCountPill" class="version-pill">0</span>
+              </div>
+              <div id="liveWaitingList" class="live-queue-list"></div>
+            </div>
+            <div class="live-col">
+              <div class="live-col-head">
+                <h4>Oxirgi chiqarilganlar</h4>
+              </div>
+              <div id="liveRecentList" class="live-queue-list"></div>
+            </div>
+          </div>
+        </div>
+
         <!-- Step 1: Upload Hero (shown when no document is active) -->
         <div id="uploadView" class="upload-view">
           <div class="upload-hero-card">
@@ -494,7 +535,8 @@
               />
               <select id="adminJobStatusFilter" class="select-input status-filter-select">
                 <option value="ALL">Barcha holatlar</option>
-                <option value="READY_IN_QUEUE">Navbatda / Test</option>
+                <option value="WAITING_IN_QUEUE">Kutish navbatida</option>
+                <option value="READY_IN_QUEUE">Faol chop etishda / Test</option>
                 <option value="QUEUED_FOR_AGENT">Pi navbatida</option>
                 <option value="PRINTING_ON_PI">Raspberry Pi chop etmoqda</option>
                 <option value="SENT_TO_PRINTER">Printerga yuborilgan</option>

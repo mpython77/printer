@@ -576,6 +576,129 @@ class ApiIntegrationTests(unittest.TestCase):
             if job_id:
                 self.client.delete(f"/api/admin/print-jobs/{job_id}", headers=headers)
 
+    def test_multi_user_10_concurrent_queue_and_confirmation_flow(self):
+        from concurrent.futures import ThreadPoolExecutor
+
+        admin_login = self.client.post(
+            "/api/admin/login",
+            json={"username": "admin", "password": "admin123"},
+        )
+        self.assertEqual(admin_login.status_code, 200)
+        token = admin_login.json()["token"]
+        headers = {"Authorization": f"Bearer {token}"}
+
+        # Ensure queue starts cleanly from IDLE
+        initial_live = self.client.get("/api/queue/live")
+        self.assertEqual(initial_live.status_code, 200)
+        pre_existing_ids = []
+        init_payload = initial_live.json()
+        if init_payload.get("active_job"):
+            pre_existing_ids.append(init_payload["active_job"]["id"])
+        for item in init_payload.get("waiting_jobs", []):
+            pre_existing_ids.append(item["id"])
+        for old_id in pre_existing_ids:
+            self.client.delete(f"/api/admin/print-jobs/{old_id}", headers=headers)
+
+        idle_check = self.client.get("/api/queue/live").json()
+        self.assertEqual(idle_check["printer_state"], "IDLE")
+        self.assertFalse(idle_check["printer_busy"])
+
+        up_resp = self.client.post("/api/documents/sample")
+        self.assertEqual(up_resp.status_code, 200)
+        doc_id = up_resp.json()["id"]
+
+        created_jobs = []
+        try:
+            def submit_student(idx: int):
+                client_tok = f"student-token-{idx}"
+                resp = self.client.post(
+                    "/api/print-jobs",
+                    json={
+                        "document_id": doc_id,
+                        "student_name": f"Talaba {idx}",
+                        "selected_pages": [1, 2],
+                        "copies": 1,
+                        "color_mode": "bw",
+                        "duplex": "simplex",
+                        "paper_size": "A4",
+                        "client_token": client_tok,
+                    },
+                )
+                return idx, client_tok, resp
+
+            with ThreadPoolExecutor(max_workers=10) as pool:
+                results = list(pool.map(submit_student, range(1, 11)))
+
+            for idx, client_tok, resp in results:
+                self.assertEqual(resp.status_code, 200, f"Student {idx} failed: {resp.text}")
+                created_jobs.append((client_tok, resp.json()))
+
+            live_resp = self.client.get("/api/queue/live")
+            self.assertEqual(live_resp.status_code, 200)
+            live = live_resp.json()
+            self.assertTrue(live["printer_busy"])
+            self.assertEqual(live["printer_state"], "PRINTING")
+            self.assertIsNotNone(live["active_job"])
+            self.assertEqual(live["active_job"]["queue_state"], "ACTIVE_PRINTING")
+            self.assertEqual(live["active_job"]["queue_position"], 0)
+            self.assertEqual(live["waiting_count"], 9)
+            self.assertEqual(len(live["waiting_jobs"]), 9)
+            for expected_pos, w_item in enumerate(live["waiting_jobs"], start=1):
+                self.assertEqual(w_item["queue_position"], expected_pos)
+                self.assertEqual(w_item["queue_state"], "WAITING_IN_QUEUE")
+                self.assertGreater(w_item["estimated_wait_seconds"], 0)
+
+            active_job = live["active_job"]
+            active_id = active_job["id"]
+            active_token = active_job["client_token"]
+            first_waiting = live["waiting_jobs"][0]
+            last_waiting = live["waiting_jobs"][-1]
+
+            # Test /extend increases remaining_print_seconds
+            before_rem = active_job["remaining_print_seconds"]
+            extend_resp = self.client.post(
+                f"/api/print-jobs/{active_id}/extend",
+                json={"client_token": active_token, "extra_seconds": 15},
+            )
+            self.assertEqual(extend_resp.status_code, 200)
+            self.assertGreaterEqual(
+                extend_resp.json()["remaining_print_seconds"],
+                before_rem + 10,
+            )
+
+            # Test /cancel removes the last waiting job cleanly
+            cancel_resp = self.client.post(
+                f"/api/print-jobs/{last_waiting['id']}/cancel",
+                json={"client_token": last_waiting["client_token"]},
+            )
+            self.assertEqual(cancel_resp.status_code, 200)
+            self.assertEqual(cancel_resp.json()["status"], "CANCELLED")
+            after_cancel = self.client.get("/api/queue/live").json()
+            self.assertEqual(after_cancel["waiting_count"], 8)
+
+            # Test /confirm marks active job COMPLETED and promotes #1 waiting student immediately
+            confirm_resp = self.client.post(
+                f"/api/print-jobs/{active_id}/confirm",
+                json={"client_token": active_token},
+            )
+            self.assertEqual(confirm_resp.status_code, 200)
+            confirmed = confirm_resp.json()
+            self.assertEqual(confirmed["status"], "COMPLETED")
+            self.assertEqual(confirmed["queue_state"], "COMPLETED")
+
+            promoted_live = self.client.get("/api/queue/live").json()
+            self.assertTrue(promoted_live["printer_busy"])
+            self.assertIsNotNone(promoted_live["active_job"])
+            self.assertEqual(promoted_live["active_job"]["id"], first_waiting["id"])
+            self.assertEqual(promoted_live["active_job"]["queue_state"], "ACTIVE_PRINTING")
+            self.assertEqual(promoted_live["active_job"]["queue_position"], 0)
+            self.assertEqual(promoted_live["waiting_count"], 7)
+            for idx_pos, w_item in enumerate(promoted_live["waiting_jobs"], start=1):
+                self.assertEqual(w_item["queue_position"], idx_pos)
+        finally:
+            for _, job_data in created_jobs:
+                self.client.delete(f"/api/admin/print-jobs/{job_data['id']}", headers=headers)
+
 
 if __name__ == "__main__":
     unittest.main()

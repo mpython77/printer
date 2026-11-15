@@ -21,6 +21,11 @@
     pageCards: new Map(),
     adminDashboard: null,
     countdownTimer: null,
+    liveQueue: null,
+    activeModalJob: null,
+    showQueueDetails: false,
+    queuePollTimer: null,
+    isPollingQueue: false,
   };
 
   // DOM References
@@ -32,6 +37,18 @@
     openAdminBtn: document.getElementById("openAdminBtn"),
     openAdminBtnLabel: document.getElementById("openAdminBtnLabel"),
     adminLogoutBtn: document.getElementById("adminLogoutBtn"),
+
+    liveQueueCard: document.getElementById("liveQueueCard"),
+    livePrinterStateBadge: document.getElementById("livePrinterStateBadge"),
+    livePrinterStateText: document.getElementById("livePrinterStateText"),
+    liveQueueMetaText: document.getElementById("liveQueueMetaText"),
+    toggleQueueDetailsBtn: document.getElementById("toggleQueueDetailsBtn"),
+    liveActiveJobBox: document.getElementById("liveActiveJobBox"),
+    liveConfirmPrompt: document.getElementById("liveConfirmPrompt"),
+    liveQueueColumns: document.getElementById("liveQueueColumns"),
+    liveWaitingCountPill: document.getElementById("liveWaitingCountPill"),
+    liveWaitingList: document.getElementById("liveWaitingList"),
+    liveRecentList: document.getElementById("liveRecentList"),
 
     studentView: document.getElementById("studentView"),
     adminView: document.getElementById("adminView"),
@@ -671,6 +688,7 @@
 
       const job = await SmartPrintApi.createPrintJob(payload);
       showJobResultModal(job);
+      loadLiveQueue();
     } catch (err) {
       showToast(err.message, "error");
     } finally {
@@ -679,30 +697,109 @@
     }
   }
 
-  function showJobResultModal(job) {
-    stopCountdownTimer();
-    el.jobResultPdfLink.href = job.pdf_url;
-    const totalSec = Math.max(0, parseInt(job.estimated_seconds, 10) || 0);
-    const countdownMarkup =
-      totalSec > 0
-        ? `
-      <div class="countdown-banner" id="jobCountdownBox">
+  function formatColorLabel(job) {
+    if (job.color_mode === "mixed") {
+      return `Aralash (${job.bw_sheets} oq-qora, ${job.color_sheets} rangli)`;
+    }
+    return job.color_mode === "color" ? "Rangli" : "Oq-qora";
+  }
+
+  function buildJobLiveBannerMarkup(job) {
+    const qState = job.queue_state || "ACTIVE_PRINTING";
+    const totalSec = Math.max(1, parseInt(job.estimated_seconds, 10) || 5);
+    const remSec = Math.max(0, parseInt(job.remaining_print_seconds, 10) || 0);
+    const pct =
+      qState === "AWAITING_CONFIRMATION" || qState === "COMPLETED"
+        ? 100
+        : Math.max(4, Math.min(100, Math.round(((totalSec - remSec) / totalSec) * 100)));
+
+    if (qState === "COMPLETED") {
+      return `
+        <div class="modal-live-banner is-done">
+          <div class="modal-live-head">
+            <strong>✅ Tasdiqlandi — Chop etish yakunlandi</strong>
+            <span>Navbat keyingi foydalanuvchiga o'tdi</span>
+          </div>
+        </div>
+      `;
+    }
+    if (qState === "CANCELLED") {
+      return `
+        <div class="modal-live-banner is-cancelled">
+          <div class="modal-live-head">
+            <strong>🚫 Buyurtma bekor qilindi</strong>
+          </div>
+        </div>
+      `;
+    }
+    if (qState === "WAITING_IN_QUEUE") {
+      return `
+        <div class="modal-live-banner is-waiting">
+          <div class="modal-live-head">
+            <strong>🕒 Navbatda ${job.queue_position}-o'rindasiz</strong>
+            <span>Taxminiy kutish: ${escapeHtml(formatDuration(job.estimated_wait_seconds))}</span>
+          </div>
+          <p class="modal-live-sub">
+            Oldingi foydalanuvchi qog'ozlarni chiqarib tasdiqlagach, sizning hujjatingiz avtomatik chop etiladi.
+          </p>
+          <div class="live-confirm-actions">
+            <button type="button" class="btn btn-danger-outline btn-sm" data-cancel-job-id="${escapeHtml(job.id)}">
+              Navbatdan chiqish (Bekor qilish)
+            </button>
+          </div>
+        </div>
+      `;
+    }
+    if (qState === "AWAITING_CONFIRMATION") {
+      const autoSec = Math.max(0, parseInt(job.confirm_remaining_seconds, 10) || 0);
+      return `
+        <div class="modal-live-banner is-confirm">
+          <div class="modal-live-title">
+            🖨️ Qog'ozlaringiz printerdan chiqib bo'ldimi? Rostdan ham chiqarib oldingizmi?
+          </div>
+          <p class="modal-live-sub">
+            Qog'ozlarni qo'lingizga olgach tasdiqlang — shundan so'ng navbat keyingi foydalanuvchiga beriladi (${autoSec} soniyadan keyin avtomatik bo'shaydi).
+          </p>
+          <div class="live-confirm-actions">
+            <button type="button" class="btn btn-print btn-sm" data-confirm-job-id="${escapeHtml(job.id)}">
+              ✅ Ha, chiqarib bo'ldim (Navbatni bo'shatish)
+            </button>
+            <button type="button" class="btn btn-secondary btn-sm" data-extend-job-id="${escapeHtml(job.id)}">
+              ⏳ Hali chiqyapti (+15s)
+            </button>
+          </div>
+        </div>
+      `;
+    }
+
+    return `
+      <div class="modal-live-banner is-printing">
         <div class="countdown-head">
           <span>Printer chiqish taymeri</span>
-          <strong id="jobCountdownText">${escapeHtml(formatDuration(totalSec))} qoldi</strong>
+          <strong id="jobCountdownText">${remSec > 0 ? `${escapeHtml(formatDuration(remSec))} qoldi` : "Yakunlanmoqda..."}</strong>
         </div>
         <div class="countdown-bar-track">
-          <div class="countdown-bar-fill" id="jobCountdownFill" style="width: 0%"></div>
+          <div class="countdown-bar-fill" id="jobCountdownFill" style="width: ${pct}%"></div>
         </div>
-      </div>`
-        : "";
+        <div class="live-confirm-actions live-confirm-actions--compact">
+          <button type="button" class="btn btn-primary btn-sm" data-confirm-job-id="${escapeHtml(job.id)}">
+            ✅ Qog'oz chiqib bo'ldi — Tasdiqlash
+          </button>
+          <button type="button" class="btn btn-ghost btn-sm" data-extend-job-id="${escapeHtml(job.id)}">
+            +15s qo'shish
+          </button>
+        </div>
+      </div>
+    `;
+  }
 
-    const colorLabel =
-      job.color_mode === "mixed"
-        ? `Aralash (${job.bw_sheets} oq-qora, ${job.color_sheets} rangli)`
-        : job.color_mode === "color"
-          ? "Rangli"
-          : "Oq-qora";
+  function showJobResultModal(job) {
+    stopCountdownTimer();
+    state.activeModalJob = job;
+    el.jobResultPdfLink.href = job.pdf_url;
+
+    const totalSec = Math.max(0, parseInt(job.estimated_seconds, 10) || 0);
+    const colorLabel = formatColorLabel(job);
     const segmentsHtml =
       job.print_segments && job.print_segments.length > 1
         ? `
@@ -720,10 +817,10 @@
         : "";
 
     el.jobResultBody.innerHTML = `
-      <div class="result-notice">
+      <div class="result-notice" id="jobModalStatusNotice">
         <strong>${escapeHtml(job.status_message)}</strong>
       </div>
-      ${countdownMarkup}
+      <div id="jobModalLiveBanner">${buildJobLiveBannerMarkup(job)}</div>
       ${segmentsHtml}
       <div class="result-specs">
         <div class="spec-box">
@@ -756,24 +853,268 @@
         </div>
       </div>
     `;
+    attachQueueActionHandlers(el.jobResultBody);
     el.jobResultModal.classList.remove("hidden");
+  }
 
-    if (totalSec > 0) {
-      const startedAt = Date.now();
-      const textEl = document.getElementById("jobCountdownText");
-      const fillEl = document.getElementById("jobCountdownFill");
-      state.countdownTimer = setInterval(() => {
-        const elapsed = (Date.now() - startedAt) / 1000;
-        const remaining = Math.max(0, Math.ceil(totalSec - elapsed));
-        const pct = Math.min(100, Math.round((elapsed / totalSec) * 100));
-        if (fillEl) fillEl.style.width = `${pct}%`;
-        if (remaining <= 0) {
-          if (textEl) textEl.textContent = "Hisoblangan chiqish vaqti yakunlandi!";
-          stopCountdownTimer();
-        } else if (textEl) {
-          textEl.textContent = `${formatDuration(remaining)} qoldi`;
-        }
-      }, 1000);
+  function syncOpenJobModalWithLiveQueue() {
+    if (!state.activeModalJob || el.jobResultModal.classList.contains("hidden") || !state.liveQueue) {
+      return;
+    }
+    const targetId = state.activeModalJob.id;
+    const candidates = [
+      state.liveQueue.active_job,
+      ...(state.liveQueue.waiting_jobs || []),
+      ...(state.liveQueue.recent_jobs || []),
+    ].filter(Boolean);
+    const liveMatch = candidates.find((item) => item.id === targetId);
+    if (!liveMatch) return;
+
+    state.activeModalJob = { ...state.activeModalJob, ...liveMatch };
+    const noticeEl = document.getElementById("jobModalStatusNotice");
+    if (noticeEl) {
+      noticeEl.innerHTML = `<strong>${escapeHtml(liveMatch.status_message)}</strong>`;
+    }
+    const liveBannerEl = document.getElementById("jobModalLiveBanner");
+    if (liveBannerEl) {
+      liveBannerEl.innerHTML = buildJobLiveBannerMarkup(state.activeModalJob);
+      attachQueueActionHandlers(liveBannerEl);
+    }
+  }
+
+  async function confirmJobPrintedAction(jobId) {
+    try {
+      const updated = await SmartPrintApi.confirmJobPrinted(jobId);
+      if (state.activeModalJob && state.activeModalJob.id === jobId) {
+        state.activeModalJob = updated;
+      }
+      showToast("Rahmat! Chop etish tasdiqlandi va navbat keyingi foydalanuvchiga o'tdi.", "success");
+      await loadLiveQueue();
+    } catch (err) {
+      showToast(err.message, "error");
+    }
+  }
+
+  async function extendJobTimeAction(jobId) {
+    try {
+      const updated = await SmartPrintApi.extendJobTime(jobId, 15);
+      if (state.activeModalJob && state.activeModalJob.id === jobId) {
+        state.activeModalJob = updated;
+      }
+      showToast("Printer uchun qo'shimcha +15 soniya vaqt qo'shildi.", "info");
+      await loadLiveQueue();
+    } catch (err) {
+      showToast(err.message, "error");
+    }
+  }
+
+  async function cancelJobAction(jobId) {
+    try {
+      const updated = await SmartPrintApi.cancelPrintJob(jobId);
+      if (state.activeModalJob && state.activeModalJob.id === jobId) {
+        state.activeModalJob = updated;
+      }
+      showToast("Buyurtma navbatdan bekor qilindi.", "info");
+      await loadLiveQueue();
+    } catch (err) {
+      showToast(err.message, "error");
+    }
+  }
+
+  function attachQueueActionHandlers(root) {
+    if (!root) return;
+    root.querySelectorAll("[data-confirm-job-id]").forEach((btn) => {
+      btn.addEventListener("click", () => confirmJobPrintedAction(btn.dataset.confirmJobId));
+    });
+    root.querySelectorAll("[data-extend-job-id]").forEach((btn) => {
+      btn.addEventListener("click", () => extendJobTimeAction(btn.dataset.extendJobId));
+    });
+    root.querySelectorAll("[data-cancel-job-id]").forEach((btn) => {
+      btn.addEventListener("click", () => cancelJobAction(btn.dataset.cancelJobId));
+    });
+  }
+
+  function renderLiveQueue() {
+    const q = state.liveQueue;
+    if (!q || !el.liveQueueCard) return;
+    const myToken = SmartPrintApi.getClientToken();
+
+    el.liveQueueCard.classList.remove("is-idle", "is-busy", "is-confirm");
+    el.livePrinterStateBadge.classList.remove("is-idle", "is-busy", "is-confirm");
+
+    if (q.printer_state === "IDLE") {
+      el.liveQueueCard.classList.add("is-idle");
+      el.livePrinterStateBadge.classList.add("is-idle");
+      el.livePrinterStateText.textContent = "Printer BO'SH — Chop etishga tayyor";
+      el.liveQueueMetaText.textContent =
+        q.recent_jobs && q.recent_jobs.length
+          ? `Oxirgi chiqarish yakunlangan • Navbat bo'sh`
+          : "Navbatda hech kim yo'q";
+    } else if (q.printer_state === "AWAITING_CONFIRMATION") {
+      el.liveQueueCard.classList.add("is-confirm");
+      el.livePrinterStateBadge.classList.add("is-confirm");
+      el.livePrinterStateText.textContent = "Tasdiqlash kutilmoqda";
+      el.liveQueueMetaText.textContent = `${q.active_job ? q.active_job.student_name : "Foydalanuvchi"} tasdiqlashi kutilmoqda • Navbat: ${q.waiting_count} ta`;
+    } else {
+      el.liveQueueCard.classList.add("is-busy");
+      el.livePrinterStateBadge.classList.add("is-busy");
+      el.livePrinterStateText.textContent = "Printer BAND — Chop etilmoqda";
+      el.liveQueueMetaText.textContent = `${q.active_job ? q.active_job.physical_sheets : 0} varaq chiqmoqda • Navbat: ${q.waiting_count} ta`;
+    }
+
+    const hasDetails = q.printer_busy || q.waiting_count > 0 || (q.recent_jobs && q.recent_jobs.length > 0);
+    el.toggleQueueDetailsBtn.classList.toggle("hidden", !hasDetails || q.printer_busy);
+
+    if (q.active_job) {
+      const act = q.active_job;
+      const isMine = !act.client_token || act.client_token === myToken;
+      const totalSec = Math.max(1, parseInt(act.estimated_seconds, 10) || 5);
+      const remSec = Math.max(0, parseInt(act.remaining_print_seconds, 10) || 0);
+      const pct =
+        act.queue_state === "AWAITING_CONFIRMATION"
+          ? 100
+          : Math.max(5, Math.min(100, Math.round(((totalSec - remSec) / totalSec) * 100)));
+
+      el.liveActiveJobBox.innerHTML = `
+        <div class="live-active-main">
+          <div class="live-active-info">
+            <div class="live-active-who">
+              <strong>${escapeHtml(act.student_name)}</strong>
+              ${isMine ? `<span class="mine-badge">Siz</span>` : ""}
+              <span class="tag-pill">${act.physical_sheets} varaq</span>
+              <span class="tag-pill">${escapeHtml(formatColorLabel(act))}</span>
+            </div>
+            <div class="live-active-file">
+              📄 ${escapeHtml(act.original_filename)} • Betlar: ${escapeHtml(act.page_range_text)} (${act.copies} nusxa)
+            </div>
+          </div>
+          <div class="live-active-timer">
+            ${
+              act.queue_state === "AWAITING_CONFIRMATION"
+                ? `<strong>Chiqib bo'ldi — tasdiqlash kutilmoqda</strong><span>${act.confirm_remaining_seconds} soniyada avtomatik bo'shaydi</span>`
+                : `<strong>${remSec > 0 ? `${escapeHtml(formatDuration(remSec))} qoldi` : "Yakunlanmoqda..."}</strong><span>Jami vaqt: ${escapeHtml(formatDuration(totalSec))}</span>`
+            }
+          </div>
+        </div>
+        <div class="live-progress-track">
+          <div class="live-progress-fill" style="width: ${pct}%"></div>
+        </div>
+      `;
+      el.liveActiveJobBox.classList.remove("hidden");
+
+      if (isMine && act.queue_state === "AWAITING_CONFIRMATION") {
+        el.liveConfirmPrompt.innerHTML = `
+          <div class="live-confirm-text">
+            <strong>🖨️ Qog'ozlaringiz printerdan chiqib bo'ldimi? Rostdan ham chiqarib oldingizmi?</strong>
+            <span>Tasdiqlashingiz bilan navbatdagi foydalanuvchi hujjati chop etila boshlaydi.</span>
+          </div>
+          <div class="live-confirm-actions">
+            <button type="button" class="btn btn-print btn-sm" data-confirm-job-id="${escapeHtml(act.id)}">
+              ✅ Ha, chiqarib bo'ldim (Navbatni bo'shatish)
+            </button>
+            <button type="button" class="btn btn-secondary btn-sm" data-extend-job-id="${escapeHtml(act.id)}">
+              ⏳ Hali chiqyapti (+15s)
+            </button>
+          </div>
+        `;
+        el.liveConfirmPrompt.classList.remove("hidden");
+        attachQueueActionHandlers(el.liveConfirmPrompt);
+      } else if (isMine && act.queue_state === "ACTIVE_PRINTING") {
+        el.liveConfirmPrompt.innerHTML = `
+          <div class="live-confirm-text">
+            <strong>Sizning hujjatingiz hozir printerdan chiqmoqda (${act.physical_sheets} varaq).</strong>
+            <span>Agar qog'ozlar taymerdan oldinroq chiqib bo'lsa, quyidagi tugmani bosing:</span>
+          </div>
+          <div class="live-confirm-actions">
+            <button type="button" class="btn btn-primary btn-sm" data-confirm-job-id="${escapeHtml(act.id)}">
+              ✅ Ha, chiqarib bo'ldim
+            </button>
+            <button type="button" class="btn btn-ghost btn-sm" data-extend-job-id="${escapeHtml(act.id)}">
+              +15s qo'shish
+            </button>
+          </div>
+        `;
+        el.liveConfirmPrompt.classList.remove("hidden");
+        attachQueueActionHandlers(el.liveConfirmPrompt);
+      } else {
+        el.liveConfirmPrompt.classList.add("hidden");
+        el.liveConfirmPrompt.innerHTML = "";
+      }
+    } else {
+      el.liveActiveJobBox.classList.add("hidden");
+      el.liveActiveJobBox.innerHTML = "";
+      el.liveConfirmPrompt.classList.add("hidden");
+      el.liveConfirmPrompt.innerHTML = "";
+    }
+
+    el.liveWaitingCountPill.textContent = String(q.waiting_count);
+    if (q.waiting_jobs && q.waiting_jobs.length) {
+      el.liveWaitingList.innerHTML = q.waiting_jobs
+        .map((w) => {
+          const isMine = !w.client_token || w.client_token === myToken;
+          return `
+            <div class="live-queue-row ${isMine ? "is-mine" : ""}">
+              <div class="live-row-left">
+                <span class="queue-pos-badge">#${w.queue_position}</span>
+                <div class="live-row-info">
+                  <strong>${escapeHtml(w.student_name)} ${isMine ? `<span class="mine-badge">Siz</span>` : ""}</strong>
+                  <span>${escapeHtml(w.original_filename)} • ${w.physical_sheets} varaq • ${escapeHtml(formatColorLabel(w))}</span>
+                </div>
+              </div>
+              <div class="live-row-right">
+                <span class="wait-eta">~${escapeHtml(formatDuration(w.estimated_wait_seconds))}</span>
+                ${
+                  isMine
+                    ? `<button type="button" class="btn btn-ghost btn-sm" data-cancel-job-id="${escapeHtml(w.id)}">Bekor qilish</button>`
+                    : ""
+                }
+              </div>
+            </div>
+          `;
+        })
+        .join("");
+      attachQueueActionHandlers(el.liveWaitingList);
+    } else {
+      el.liveWaitingList.innerHTML = `<div class="live-empty">Navbatda kutayotganlar yo'q</div>`;
+    }
+
+    if (q.recent_jobs && q.recent_jobs.length) {
+      el.liveRecentList.innerHTML = q.recent_jobs
+        .map(
+          (r) => `
+          <div class="live-queue-row">
+            <div class="live-row-left">
+              <div class="live-row-info">
+                <strong>${escapeHtml(r.student_name)}</strong>
+                <span>${escapeHtml(r.original_filename)} • ${r.physical_sheets} varaq</span>
+              </div>
+            </div>
+            <div class="live-row-right">
+              <span class="status-tag status-tag--ok">✓ Chiqarildi</span>
+            </div>
+          </div>
+        `
+        )
+        .join("");
+    } else {
+      el.liveRecentList.innerHTML = `<div class="live-empty">Hali chiqarilgan hujjatlar yo'q</div>`;
+    }
+
+    const showColumns = q.printer_busy || q.waiting_count > 0 || state.showQueueDetails;
+    el.liveQueueColumns.classList.toggle("hidden", !showColumns);
+    syncOpenJobModalWithLiveQueue();
+  }
+
+  async function loadLiveQueue() {
+    if (state.isPollingQueue) return;
+    state.isPollingQueue = true;
+    try {
+      state.liveQueue = await SmartPrintApi.getLiveQueue();
+      renderLiveQueue();
+    } catch (_) {
+      // ignore transient network errors while polling
+    } finally {
+      state.isPollingQueue = false;
     }
   }
 
@@ -915,6 +1256,10 @@
         return { label: "Printerga yuborildi", cls: "status-tag--ok" };
       case "PRINTING_ON_PI":
         return { label: "Raspberry Pi chop etmoqda", cls: "status-tag--ok" };
+      case "AWAITING_CONFIRMATION":
+        return { label: "Tasdiqlash kutilmoqda", cls: "" };
+      case "WAITING_IN_QUEUE":
+        return { label: "Kutish navbatida", cls: "" };
       case "QUEUED_FOR_AGENT":
         return { label: "Pi navbatida", cls: "" };
       case "ERROR":
@@ -1308,9 +1653,18 @@
       }
     });
 
+    if (el.toggleQueueDetailsBtn) {
+      el.toggleQueueDetailsBtn.addEventListener("click", () => {
+        state.showQueueDetails = !state.showQueueDetails;
+        el.toggleQueueDetailsBtn.textContent = state.showQueueDetails ? "Yashirish" : "Tafsilotlar";
+        renderLiveQueue();
+      });
+    }
+
     // Job Result Modal
     const closeJobModal = () => {
       stopCountdownTimer();
+      state.activeModalJob = null;
       el.jobResultModal.classList.add("hidden");
     };
     el.jobModalCloseBtn.addEventListener("click", closeJobModal);
@@ -1320,7 +1674,11 @@
   async function init() {
     bindEvents();
     setActiveView("student");
-    await loadSystemStatus();
+    await Promise.all([loadSystemStatus(), loadLiveQueue()]);
+    if (state.queuePollTimer) {
+      clearInterval(state.queuePollTimer);
+    }
+    state.queuePollTimer = setInterval(loadLiveQueue, 2000);
   }
 
   init();

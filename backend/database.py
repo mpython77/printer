@@ -5,12 +5,17 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import math
 import secrets
 import sqlite3
+import threading
+import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
+
+QUEUE_LOCK = threading.RLock()
 
 from backend.config import (
     DB_PATH,
@@ -54,11 +59,13 @@ def _verify_password(password: str, stored_hash: str) -> bool:
 
 @contextmanager
 def get_connection(db_path: Path | None = None) -> Iterator[sqlite3.Connection]:
-    """Yield a SQLite connection configured with dict-like Row access."""
+    """Yield a SQLite connection configured with WAL mode and busy timeout."""
     target = db_path or DB_PATH
     target.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(target), check_same_thread=False)
+    conn = sqlite3.connect(str(target), timeout=30.0, check_same_thread=False)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=30000")
     try:
         yield conn
         conn.commit()
@@ -114,6 +121,12 @@ def init_db(db_path: Path | None = None) -> None:
                 status_message TEXT NOT NULL DEFAULT '',
                 output_pdf_path TEXT NOT NULL,
                 created_at TEXT NOT NULL,
+                client_token TEXT NOT NULL DEFAULT '',
+                queue_state TEXT NOT NULL DEFAULT 'COMPLETED',
+                started_at TEXT NOT NULL DEFAULT '',
+                printing_until_ts REAL NOT NULL DEFAULT 0,
+                confirm_deadline_ts REAL NOT NULL DEFAULT 0,
+                completed_at TEXT NOT NULL DEFAULT '',
                 FOREIGN KEY (document_id) REFERENCES documents (id)
             )
             """
@@ -125,6 +138,12 @@ def init_db(db_path: Path | None = None) -> None:
             "bw_sheets": "INTEGER NOT NULL DEFAULT 0",
             "color_sheets": "INTEGER NOT NULL DEFAULT 0",
             "segments_json": "TEXT NOT NULL DEFAULT '[]'",
+            "client_token": "TEXT NOT NULL DEFAULT ''",
+            "queue_state": "TEXT NOT NULL DEFAULT 'COMPLETED'",
+            "started_at": "TEXT NOT NULL DEFAULT ''",
+            "printing_until_ts": "REAL NOT NULL DEFAULT 0",
+            "confirm_deadline_ts": "REAL NOT NULL DEFAULT 0",
+            "completed_at": "TEXT NOT NULL DEFAULT ''",
         }
         for col_name, col_def in migrations.items():
             if col_name not in cols:
@@ -337,6 +356,19 @@ def get_document(doc_id: str, db_path: Path | None = None) -> dict[str, Any] | N
     return dict(row) if row else None
 
 
+_ALLOWED_JOB_UPDATE_FIELDS = frozenset(
+    {
+        "status",
+        "status_message",
+        "queue_state",
+        "started_at",
+        "printing_until_ts",
+        "confirm_deadline_ts",
+        "completed_at",
+    }
+)
+
+
 def _row_to_job(row: sqlite3.Row) -> dict[str, Any]:
     data = dict(row)
     data["selected_pages"] = json.loads(data.pop("selected_pages_json", "[]"))
@@ -346,6 +378,12 @@ def _row_to_job(row: sqlite3.Row) -> dict[str, Any]:
     data["bw_sheets"] = int(data.get("bw_sheets") or 0)
     data["color_sheets"] = int(data.get("color_sheets") or 0)
     data["estimated_seconds"] = int(data.get("estimated_seconds") or 0)
+    data["client_token"] = str(data.get("client_token") or "")
+    data["queue_state"] = str(data.get("queue_state") or "COMPLETED")
+    data["started_at"] = str(data.get("started_at") or "")
+    data["printing_until_ts"] = float(data.get("printing_until_ts") or 0.0)
+    data["confirm_deadline_ts"] = float(data.get("confirm_deadline_ts") or 0.0)
+    data["completed_at"] = str(data.get("completed_at") or "")
     return data
 
 
@@ -363,8 +401,10 @@ def create_print_job(job: dict[str, Any], db_path: Path | None = None) -> dict[s
                 total_printed_pages, physical_sheets, estimated_cost,
                 estimated_seconds, color_pages_json, bw_sheets,
                 color_sheets, segments_json, printer_name, printer_mode,
-                status, status_message, output_pdf_path, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                status, status_message, output_pdf_path, created_at,
+                client_token, queue_state, started_at,
+                printing_until_ts, confirm_deadline_ts, completed_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 job["id"],
@@ -395,6 +435,12 @@ def create_print_job(job: dict[str, Any], db_path: Path | None = None) -> dict[s
                 job.get("status_message", ""),
                 job["output_pdf_path"],
                 created_at,
+                job.get("client_token", ""),
+                job.get("queue_state", "COMPLETED"),
+                job.get("started_at", ""),
+                float(job.get("printing_until_ts", 0.0) or 0.0),
+                float(job.get("confirm_deadline_ts", 0.0) or 0.0),
+                job.get("completed_at", ""),
             ),
         )
     stored = get_print_job(job["id"], db_path=db_path)
@@ -406,7 +452,7 @@ def list_print_jobs(limit: int = 100, db_path: Path | None = None) -> list[dict[
     """Return print jobs ordered newest-first."""
     with get_connection(db_path) as conn:
         rows = conn.execute(
-            "SELECT * FROM print_jobs ORDER BY created_at DESC LIMIT ?", (limit,)
+            "SELECT * FROM print_jobs ORDER BY created_at DESC, rowid DESC LIMIT ?", (limit,)
         ).fetchall()
     return [_row_to_job(r) for r in rows]
 
@@ -420,19 +466,145 @@ def get_print_job(job_id: str, db_path: Path | None = None) -> dict[str, Any] | 
     return _row_to_job(row) if row else None
 
 
+def get_active_queue_job(db_path: Path | None = None) -> dict[str, Any] | None:
+    """Return the job currently occupying the physical printer or awaiting student confirmation."""
+    with get_connection(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT * FROM print_jobs
+            WHERE queue_state IN ('ACTIVE_PRINTING', 'AWAITING_CONFIRMATION')
+            ORDER BY created_at ASC, rowid ASC
+            LIMIT 1
+            """
+        ).fetchone()
+    return _row_to_job(row) if row else None
+
+
+def list_waiting_queue_jobs(db_path: Path | None = None) -> list[dict[str, Any]]:
+    """Return waiting jobs in strict FIFO submission order."""
+    with get_connection(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT * FROM print_jobs
+            WHERE queue_state = 'WAITING_IN_QUEUE'
+            ORDER BY created_at ASC, rowid ASC
+            """
+        ).fetchall()
+    return [_row_to_job(r) for r in rows]
+
+
+def list_recent_completed_jobs(limit: int = 5, db_path: Path | None = None) -> list[dict[str, Any]]:
+    """Return the most recently completed print jobs for live queue visibility."""
+    with get_connection(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT * FROM print_jobs
+            WHERE queue_state = 'COMPLETED'
+            ORDER BY COALESCE(NULLIF(completed_at, ''), created_at) DESC, rowid DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+    return [_row_to_job(r) for r in rows]
+
+
+def update_job_queue_fields(
+    job_id: str,
+    fields: dict[str, Any],
+    db_path: Path | None = None,
+) -> dict[str, Any] | None:
+    """Atomically update whitelisted queue and status columns for a print job."""
+    clean_items = [(k, v) for k, v in fields.items() if k in _ALLOWED_JOB_UPDATE_FIELDS]
+    if not clean_items:
+        return get_print_job(job_id, db_path=db_path)
+    assignments = ", ".join(f"{col} = ?" for col, _ in clean_items)
+    values = [val for _, val in clean_items] + [job_id]
+    with get_connection(db_path) as conn:
+        conn.execute(f"UPDATE print_jobs SET {assignments} WHERE id = ?", values)
+    return get_print_job(job_id, db_path=db_path)
+
+
+def compute_job_queue_enrichment(
+    job: dict[str, Any],
+    active_job: dict[str, Any] | None,
+    waiting_jobs: list[dict[str, Any]],
+    now_ts: float | None = None,
+) -> dict[str, int]:
+    """Compute live queue position and countdown timers for a job snapshot."""
+    now = time.time() if now_ts is None else now_ts
+    q_state = job.get("queue_state") or "COMPLETED"
+    remaining_print = (
+        max(0, int(math.ceil(float(job.get("printing_until_ts") or 0.0) - now)))
+        if q_state == "ACTIVE_PRINTING"
+        else 0
+    )
+    confirm_rem = (
+        max(0, int(math.ceil(float(job.get("confirm_deadline_ts") or 0.0) - now)))
+        if q_state == "AWAITING_CONFIRMATION"
+        else 0
+    )
+
+    queue_position = 0
+    estimated_wait_seconds = 0
+    if q_state == "WAITING_IN_QUEUE":
+        idx = next((i for i, item in enumerate(waiting_jobs) if item["id"] == job["id"]), len(waiting_jobs))
+        queue_position = idx + 1
+        active_rem = 0
+        if active_job and active_job.get("queue_state") == "ACTIVE_PRINTING":
+            active_rem = max(0, int(math.ceil(float(active_job.get("printing_until_ts") or 0.0) - now)))
+        ahead_wait = sum(int(w.get("estimated_seconds") or 0) for w in waiting_jobs[:idx])
+        estimated_wait_seconds = active_rem + ahead_wait
+
+    return {
+        "queue_position": queue_position,
+        "remaining_print_seconds": remaining_print,
+        "confirm_remaining_seconds": confirm_rem,
+        "estimated_wait_seconds": estimated_wait_seconds,
+    }
+
+
 def update_print_job_status(
     job_id: str,
     status: str,
     status_message: str,
     db_path: Path | None = None,
 ) -> dict[str, Any] | None:
-    """Update status and message of an existing print job."""
-    with get_connection(db_path) as conn:
-        conn.execute(
-            "UPDATE print_jobs SET status = ?, status_message = ? WHERE id = ?",
-            (status, status_message, job_id),
-        )
-    return get_print_job(job_id, db_path=db_path)
+    """Update status and message of an existing print job while syncing queue_state."""
+    existing = get_print_job(job_id, db_path=db_path)
+    if not existing:
+        return None
+    fields: dict[str, Any] = {
+        "status": status,
+        "status_message": status_message,
+    }
+    now = time.time()
+    if status == "COMPLETED":
+        fields["queue_state"] = "COMPLETED"
+        fields["completed_at"] = _utc_now_iso()
+        fields["printing_until_ts"] = 0.0
+        fields["confirm_deadline_ts"] = 0.0
+    elif status == "CANCELLED":
+        fields["queue_state"] = "CANCELLED"
+        fields["printing_until_ts"] = 0.0
+        fields["confirm_deadline_ts"] = 0.0
+    elif status == "ERROR":
+        fields["queue_state"] = "ERROR"
+        fields["printing_until_ts"] = 0.0
+        fields["confirm_deadline_ts"] = 0.0
+    elif status == "WAITING_IN_QUEUE":
+        fields["queue_state"] = "WAITING_IN_QUEUE"
+        fields["printing_until_ts"] = 0.0
+        fields["confirm_deadline_ts"] = 0.0
+    elif status == "AWAITING_CONFIRMATION":
+        fields["queue_state"] = "AWAITING_CONFIRMATION"
+    elif existing.get("queue_state") not in {"ACTIVE_PRINTING", "AWAITING_CONFIRMATION"}:
+        fields["queue_state"] = "ACTIVE_PRINTING"
+        if not existing.get("started_at"):
+            fields["started_at"] = _utc_now_iso()
+        fields["printing_until_ts"] = now + max(1, int(existing.get("estimated_seconds") or 5))
+        fields["confirm_deadline_ts"] = 0.0
+
+    return update_job_queue_fields(job_id, fields, db_path=db_path)
 
 
 def delete_print_job(job_id: str, db_path: Path | None = None) -> bool:
@@ -505,13 +677,13 @@ def record_agent_heartbeat(
 
 
 def claim_next_agent_job(db_path: Path | None = None) -> dict[str, Any] | None:
-    """Atomically claim the oldest job queued for the remote Raspberry Pi print agent."""
-    with get_connection(db_path) as conn:
+    """Atomically claim the currently active job queued for the remote Raspberry Pi print agent."""
+    with QUEUE_LOCK, get_connection(db_path) as conn:
         row = conn.execute(
             """
             SELECT id FROM print_jobs
-            WHERE status = 'QUEUED_FOR_AGENT'
-            ORDER BY created_at ASC
+            WHERE status = 'QUEUED_FOR_AGENT' AND queue_state = 'ACTIVE_PRINTING'
+            ORDER BY created_at ASC, rowid ASC
             LIMIT 1
             """
         ).fetchone()
@@ -523,7 +695,7 @@ def claim_next_agent_job(db_path: Path | None = None) -> dict[str, Any] | None:
             UPDATE print_jobs
             SET status = 'PRINTING_ON_PI',
                 status_message = 'Raspberry Pi printer ko''prigi hujjatni yuklab oldi va chop etmoqda...'
-            WHERE id = ? AND status = 'QUEUED_FOR_AGENT'
+            WHERE id = ? AND status = 'QUEUED_FOR_AGENT' AND queue_state = 'ACTIVE_PRINTING'
             """,
             (job_id,),
         )

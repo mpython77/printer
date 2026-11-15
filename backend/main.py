@@ -9,9 +9,10 @@ import json
 import shutil
 import time
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile
+from fastapi import Body, Depends, FastAPI, File, Header, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -27,10 +28,13 @@ from backend.config import (
     ensure_directories,
 )
 from backend.database import (
+    QUEUE_LOCK,
     claim_next_agent_job,
     clear_all_print_jobs,
+    compute_job_queue_enrichment,
     create_print_job,
     delete_print_job,
+    get_active_queue_job,
     get_admin_stats,
     get_document,
     get_print_job,
@@ -38,9 +42,12 @@ from backend.database import (
     get_token_secret,
     init_db,
     list_print_jobs,
+    list_recent_completed_jobs,
+    list_waiting_queue_jobs,
     record_agent_heartbeat,
     save_document,
     update_admin_credentials,
+    update_job_queue_fields,
     update_print_job_status,
     update_settings,
     verify_admin_credentials,
@@ -56,12 +63,15 @@ from backend.models import (
     AgentHeartbeatRequest,
     AgentJobReportRequest,
     DocumentResponse,
+    JobConfirmRequest,
     JobStatusUpdateRequest,
+    LiveQueueStatusResponse,
     PricingInfo,
     PrinterInfo,
     PrintJobCreateRequest,
     PrintJobResponse,
     PrintSegmentInfo,
+    QueuePublicJobItem,
     SystemStatusResponse,
 )
 from backend.services.converter import ensure_sample_pdf, normalize_to_pdf
@@ -141,7 +151,25 @@ def _doc_to_response(doc: dict) -> DocumentResponse:
     )
 
 
-def _job_to_response(job: dict) -> PrintJobResponse:
+CONFIRM_TIMEOUT_SECONDS = 90
+
+
+def _job_to_response(
+    job: dict,
+    active_job: dict | None = None,
+    waiting_jobs: list[dict] | None = None,
+    now_ts: float | None = None,
+) -> PrintJobResponse:
+    if active_job is None and waiting_jobs is None and job.get("queue_state") in {
+        "ACTIVE_PRINTING",
+        "AWAITING_CONFIRMATION",
+        "WAITING_IN_QUEUE",
+    }:
+        active_job = get_active_queue_job()
+        waiting_jobs = list_waiting_queue_jobs()
+    enrich = compute_job_queue_enrichment(
+        job, active_job, waiting_jobs or [], now_ts=now_ts
+    )
     return PrintJobResponse(
         id=job["id"],
         document_id=job["document_id"],
@@ -172,7 +200,132 @@ def _job_to_response(job: dict) -> PrintJobResponse:
         pdf_url=f"/api/print-jobs/{job['id']}/pdf",
         original_pdf_url=f"/api/documents/{job['document_id']}/pdf",
         created_at=job["created_at"],
+        client_token=job.get("client_token", ""),
+        queue_state=job.get("queue_state", "COMPLETED"),
+        queue_position=enrich["queue_position"],
+        remaining_print_seconds=enrich["remaining_print_seconds"],
+        confirm_remaining_seconds=enrich["confirm_remaining_seconds"],
+        estimated_wait_seconds=enrich["estimated_wait_seconds"],
+        started_at=job.get("started_at", ""),
+        completed_at=job.get("completed_at", ""),
     )
+
+
+def _job_to_public_item(
+    job: dict,
+    active_job: dict | None,
+    waiting_jobs: list[dict],
+    now_ts: float,
+) -> QueuePublicJobItem:
+    enrich = compute_job_queue_enrichment(job, active_job, waiting_jobs, now_ts=now_ts)
+    return QueuePublicJobItem(
+        id=job["id"],
+        student_name=job.get("student_name") or "Ismsiz foydalanuvchi",
+        original_filename=job["original_filename"],
+        page_range_text=job["page_range_text"],
+        selected_page_count=int(job["selected_page_count"]),
+        copies=int(job["copies"]),
+        color_mode=job["color_mode"],
+        duplex=job["duplex"],
+        physical_sheets=int(job["physical_sheets"]),
+        bw_sheets=int(job.get("bw_sheets", 0) or 0),
+        color_sheets=int(job.get("color_sheets", 0) or 0),
+        estimated_seconds=int(job.get("estimated_seconds", 0) or 0),
+        queue_state=job.get("queue_state", "COMPLETED"),
+        status=job["status"],
+        status_message=job.get("status_message", ""),
+        queue_position=enrich["queue_position"],
+        remaining_print_seconds=enrich["remaining_print_seconds"],
+        confirm_remaining_seconds=enrich["confirm_remaining_seconds"],
+        estimated_wait_seconds=enrich["estimated_wait_seconds"],
+        client_token=job.get("client_token", ""),
+        created_at=job["created_at"],
+        started_at=job.get("started_at", ""),
+        completed_at=job.get("completed_at", ""),
+    )
+
+
+def _dispatch_job_to_printer(job: dict) -> tuple[str, dict]:
+    settings = get_settings()
+    adapter = get_active_printer_adapter(mode=settings["printer_mode"])
+    target_printer = (job.get("printer_name") or "").strip() or settings["default_printer_name"]
+    dispatch_stub = {
+        **job,
+        "printer_name": target_printer,
+        "printer_mode": adapter.mode_name,
+    }
+    result = adapter.submit_job(dispatch_stub, Path(job["output_pdf_path"]))
+    return adapter.mode_name, result
+
+
+def _promote_next_waiting_job(now_ts: float) -> dict | None:
+    waiting = list_waiting_queue_jobs()
+    if not waiting:
+        return None
+    nxt = waiting[0]
+    _mode_name, dispatch_result = _dispatch_job_to_printer(nxt)
+    started_at = datetime.now(timezone.utc).isoformat()
+    duration = max(1, int(nxt.get("estimated_seconds") or 5))
+    return update_job_queue_fields(
+        nxt["id"],
+        {
+            "queue_state": "ACTIVE_PRINTING",
+            "status": dispatch_result["status"],
+            "status_message": dispatch_result["status_message"],
+            "started_at": started_at,
+            "printing_until_ts": now_ts + duration,
+            "confirm_deadline_ts": 0.0,
+        },
+    )
+
+
+def _tick_and_advance_queue(now_ts: float | None = None) -> tuple[dict | None, list[dict]]:
+    """Advance queue state transitions safely under QUEUE_LOCK and promote next waiting job."""
+    with QUEUE_LOCK:
+        now = time.time() if now_ts is None else now_ts
+        active = get_active_queue_job()
+        if active:
+            q_state = active.get("queue_state")
+            print_until = float(active.get("printing_until_ts") or 0.0)
+            confirm_until = float(active.get("confirm_deadline_ts") or 0.0)
+            if q_state == "ACTIVE_PRINTING" and print_until > 0 and now >= print_until:
+                active = update_job_queue_fields(
+                    active["id"],
+                    {
+                        "queue_state": "AWAITING_CONFIRMATION",
+                        "confirm_deadline_ts": now + CONFIRM_TIMEOUT_SECONDS,
+                        "status_message": "Taxminiy chiqish vaqti tugadi. Qog'ozlar chiqqanini tasdiqlang!",
+                    },
+                )
+            elif q_state == "AWAITING_CONFIRMATION" and confirm_until > 0 and now >= confirm_until:
+                update_job_queue_fields(
+                    active["id"],
+                    {
+                        "queue_state": "COMPLETED",
+                        "status": "COMPLETED",
+                        "status_message": "Tasdiqlash vaqti tugagani sababli navbat avtomatik yopildi.",
+                        "completed_at": datetime.now(timezone.utc).isoformat(),
+                        "printing_until_ts": 0.0,
+                        "confirm_deadline_ts": 0.0,
+                    },
+                )
+                active = None
+
+        if active is None:
+            active = _promote_next_waiting_job(now)
+
+        waiting = list_waiting_queue_jobs()
+        return active, waiting
+
+
+def _authorize_client_action(job: dict, provided_token: str) -> None:
+    expected = (job.get("client_token") or "").strip()
+    provided = (provided_token or "").strip()
+    if expected and provided and not hmac.compare_digest(expected, provided):
+        raise HTTPException(
+            status_code=403,
+            detail="Faqat ushbu buyurtmani yuborgan foydalanuvchi bu amalni bajarishi mumkin.",
+        )
 
 
 def _settings_to_payload(settings: dict) -> AdminSettingsPayload:
@@ -416,14 +569,12 @@ def submit_print_job(payload: PrintJobCreateRequest) -> PrintJobResponse:
         for seg in metrics.get("segments", [])
     ]
 
-    adapter = get_active_printer_adapter(mode=settings["printer_mode"])
-    target_printer = payload.printer_name.strip() or settings["default_printer_name"]
-
     job_stub = {
         "id": job_id,
         "document_id": doc["id"],
         "original_filename": doc["original_filename"],
         "student_name": payload.student_name.strip(),
+        "client_token": payload.client_token.strip(),
         "selected_pages": selected_pages,
         "page_range_text": range_text,
         "rotations": payload.rotations,
@@ -442,17 +593,192 @@ def submit_print_job(payload: PrintJobCreateRequest) -> PrintJobResponse:
         "physical_sheets": metrics["physical_sheets"],
         "estimated_cost": metrics["estimated_cost"],
         "estimated_seconds": metrics["estimated_seconds"],
-        "printer_name": target_printer,
-        "printer_mode": adapter.mode_name,
+        "printer_name": "",
+        "printer_mode": settings["printer_mode"],
         "output_pdf_path": str(output_pdf_path),
     }
 
-    dispatch_result = adapter.submit_job(job_stub, output_pdf_path)
-    job_stub["status"] = dispatch_result["status"]
-    job_stub["status_message"] = dispatch_result["status_message"]
+    with QUEUE_LOCK:
+        now = time.time()
+        active_job, waiting_jobs = _tick_and_advance_queue(now_ts=now)
+        live_settings = get_settings()
+        adapter = get_active_printer_adapter(mode=live_settings["printer_mode"])
+        target_printer = payload.printer_name.strip() or live_settings["default_printer_name"]
+        job_stub["printer_name"] = target_printer
+        job_stub["printer_mode"] = adapter.mode_name
 
-    saved_job = create_print_job(job_stub)
-    return _job_to_response(saved_job)
+        if active_job is None:
+            dispatch_result = adapter.submit_job(job_stub, output_pdf_path)
+            duration = max(1, int(metrics["estimated_seconds"] or 5))
+            job_stub["status"] = dispatch_result["status"]
+            job_stub["status_message"] = dispatch_result["status_message"]
+            job_stub["queue_state"] = "ACTIVE_PRINTING"
+            job_stub["started_at"] = datetime.now(timezone.utc).isoformat()
+            job_stub["printing_until_ts"] = now + duration
+            job_stub["confirm_deadline_ts"] = 0.0
+            saved_job = create_print_job(job_stub)
+            return _job_to_response(
+                saved_job, active_job=saved_job, waiting_jobs=waiting_jobs, now_ts=now
+            )
+
+        pos = len(waiting_jobs) + 1
+        job_stub["status"] = "WAITING_IN_QUEUE"
+        job_stub["status_message"] = (
+            f"Printer hozir band. Siz navbatda {pos}-o'rindasiz — navbatingiz kelishi bilan chop etiladi."
+        )
+        job_stub["queue_state"] = "WAITING_IN_QUEUE"
+        job_stub["started_at"] = ""
+        job_stub["printing_until_ts"] = 0.0
+        job_stub["confirm_deadline_ts"] = 0.0
+        saved_job = create_print_job(job_stub)
+        updated_waiting = list_waiting_queue_jobs()
+        return _job_to_response(
+            saved_job, active_job=active_job, waiting_jobs=updated_waiting, now_ts=now
+        )
+
+
+@app.get("/api/queue/live", response_model=LiveQueueStatusResponse)
+def get_live_print_queue() -> LiveQueueStatusResponse:
+    now = time.time()
+    active_job, waiting_jobs = _tick_and_advance_queue(now_ts=now)
+    recent_jobs = list_recent_completed_jobs(limit=5)
+    settings = get_settings()
+
+    if not active_job:
+        printer_state = "IDLE"
+        active_rem = 0
+    elif active_job.get("queue_state") == "AWAITING_CONFIRMATION":
+        printer_state = "AWAITING_CONFIRMATION"
+        active_rem = 0
+    else:
+        printer_state = "PRINTING"
+        active_rem = max(
+            0, int(float(active_job.get("printing_until_ts") or 0.0) - now + 0.999)
+        )
+
+    total_wait = active_rem + sum(int(w.get("estimated_seconds") or 0) for w in waiting_jobs)
+    return LiveQueueStatusResponse(
+        printer_busy=active_job is not None,
+        printer_state=printer_state,
+        printer_mode=settings["printer_mode"],
+        active_job=(
+            _job_to_public_item(active_job, active_job, waiting_jobs, now)
+            if active_job
+            else None
+        ),
+        waiting_jobs=[
+            _job_to_public_item(w, active_job, waiting_jobs, now) for w in waiting_jobs
+        ],
+        recent_jobs=[
+            _job_to_public_item(r, active_job, waiting_jobs, now) for r in recent_jobs
+        ],
+        waiting_count=len(waiting_jobs),
+        total_estimated_wait_seconds=total_wait,
+        server_time=datetime.now(timezone.utc).isoformat(),
+    )
+
+
+@app.post("/api/print-jobs/{job_id}/confirm", response_model=PrintJobResponse)
+def confirm_job_printed(
+    job_id: str,
+    payload: JobConfirmRequest | None = Body(default=None),
+) -> PrintJobResponse:
+    with QUEUE_LOCK:
+        now = time.time()
+        job = get_print_job(job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="Chop etish buyurtmasi topilmadi.")
+        _authorize_client_action(job, payload.client_token if payload else "")
+
+        q_state = job.get("queue_state")
+        if q_state == "COMPLETED":
+            active, waiting = _tick_and_advance_queue(now_ts=now)
+            return _job_to_response(job, active_job=active, waiting_jobs=waiting, now_ts=now)
+        if q_state not in {"ACTIVE_PRINTING", "AWAITING_CONFIRMATION"}:
+            raise HTTPException(
+                status_code=400,
+                detail="Bu buyurtma hozir faol chop etish bosqichida emas.",
+            )
+
+        updated = update_job_queue_fields(
+            job_id,
+            {
+                "queue_state": "COMPLETED",
+                "status": "COMPLETED",
+                "status_message": "Foydalanuvchi qog'ozlar chiqqanini tasdiqladi.",
+                "completed_at": datetime.now(timezone.utc).isoformat(),
+                "printing_until_ts": 0.0,
+                "confirm_deadline_ts": 0.0,
+            },
+        )
+        assert updated is not None
+        active, waiting = _tick_and_advance_queue(now_ts=now)
+        return _job_to_response(updated, active_job=active, waiting_jobs=waiting, now_ts=now)
+
+
+@app.post("/api/print-jobs/{job_id}/extend", response_model=PrintJobResponse)
+def extend_job_print_time(
+    job_id: str,
+    payload: JobConfirmRequest | None = Body(default=None),
+) -> PrintJobResponse:
+    with QUEUE_LOCK:
+        now = time.time()
+        job = get_print_job(job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="Chop etish buyurtmasi topilmadi.")
+        _authorize_client_action(job, payload.client_token if payload else "")
+        if job.get("queue_state") not in {"ACTIVE_PRINTING", "AWAITING_CONFIRMATION"}:
+            raise HTTPException(
+                status_code=400,
+                detail="Faqat chop etilayotgan buyurtma vaqtini uzaytirish mumkin.",
+            )
+
+        extra_sec = int(payload.extra_seconds) if payload else 15
+        base_ts = max(now, float(job.get("printing_until_ts") or now))
+        updated = update_job_queue_fields(
+            job_id,
+            {
+                "queue_state": "ACTIVE_PRINTING",
+                "printing_until_ts": base_ts + extra_sec,
+                "confirm_deadline_ts": 0.0,
+                "status_message": f"Printer uchun qo'shimcha {extra_sec} soniya vaqt qo'shildi...",
+            },
+        )
+        assert updated is not None
+        waiting = list_waiting_queue_jobs()
+        return _job_to_response(updated, active_job=updated, waiting_jobs=waiting, now_ts=now)
+
+
+@app.post("/api/print-jobs/{job_id}/cancel", response_model=PrintJobResponse)
+def cancel_print_job(
+    job_id: str,
+    payload: JobConfirmRequest | None = Body(default=None),
+) -> PrintJobResponse:
+    with QUEUE_LOCK:
+        now = time.time()
+        job = get_print_job(job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="Chop etish buyurtmasi topilmadi.")
+        _authorize_client_action(job, payload.client_token if payload else "")
+        if job.get("queue_state") == "COMPLETED":
+            raise HTTPException(
+                status_code=400,
+                detail="Allaqachon chop etilgan buyurtmani bekor qilib bo'lmaydi.",
+            )
+
+        updated = update_job_queue_fields(
+            job_id,
+            {
+                "queue_state": "CANCELLED",
+                "status": "CANCELLED",
+                "status_message": "Buyurtma foydalanuvchi tomonidan bekor qilindi.",
+                "printing_until_ts": 0.0,
+                "confirm_deadline_ts": 0.0,
+            },
+        )
+        assert updated is not None
+        active, waiting = _tick_and_advance_queue(now_ts=now)
+        return _job_to_response(updated, active_job=active, waiting_jobs=waiting, now_ts=now)
 
 
 @app.get("/api/print-jobs/{job_id}/pdf")
@@ -493,20 +819,29 @@ def serve_job_segment_pdf(job_id: str, segment_index: int) -> FileResponse:
 
 @app.get("/api/print-jobs/{job_id}/status")
 def get_job_live_status(job_id: str) -> dict:
-    job = get_print_job(job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail="Buyurtma topilmadi.")
+    with QUEUE_LOCK:
+        now = time.time()
+        active_job, waiting_jobs = _tick_and_advance_queue(now_ts=now)
+        job = get_print_job(job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="Buyurtma topilmadi.")
     if job["printer_mode"] == "WINDOWS_SPOOLER":
         spooler = get_spooler_status(job["printer_name"], document_title=job_id)
     elif job["printer_mode"] == "LINUX_CUPS":
         spooler = get_cups_spooler_status(job["printer_name"], document_title=job["original_filename"])
     else:
         spooler = None
+    enrich = compute_job_queue_enrichment(job, active_job, waiting_jobs, now_ts=now)
     return {
         "job_id": job["id"],
         "status": job["status"],
         "status_message": job["status_message"],
         "printer_mode": job["printer_mode"],
+        "queue_state": job.get("queue_state", "COMPLETED"),
+        "queue_position": enrich["queue_position"],
+        "remaining_print_seconds": enrich["remaining_print_seconds"],
+        "confirm_remaining_seconds": enrich["confirm_remaining_seconds"],
+        "estimated_wait_seconds": enrich["estimated_wait_seconds"],
         "spooler": spooler,
     }
 
@@ -581,41 +916,45 @@ def admin_update_job(
     payload: JobStatusUpdateRequest,
     _admin: str = Depends(require_admin),
 ) -> PrintJobResponse:
-    job = get_print_job(job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail="Buyurtma topilmadi.")
+    with QUEUE_LOCK:
+        job = get_print_job(job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="Buyurtma topilmadi.")
 
-    if payload.status == "DISPATCH_PRINTER":
-        settings = get_settings()
-        active_mode = settings["printer_mode"]
-        if active_mode in {"LINUX_CUPS", "REMOTE_AGENT", "WINDOWS_SPOOLER"}:
-            dispatch_mode = active_mode
-        elif shutil.which("lp"):
-            dispatch_mode = "LINUX_CUPS"
+        if payload.status == "DISPATCH_PRINTER":
+            settings = get_settings()
+            active_mode = settings["printer_mode"]
+            if active_mode in {"LINUX_CUPS", "REMOTE_AGENT", "WINDOWS_SPOOLER"}:
+                dispatch_mode = active_mode
+            elif shutil.which("lp"):
+                dispatch_mode = "LINUX_CUPS"
+            else:
+                dispatch_mode = "WINDOWS_SPOOLER"
+            adapter = get_active_printer_adapter(mode=dispatch_mode)
+            job_for_dispatch = {
+                **job,
+                "printer_name": job.get("printer_name") or settings["default_printer_name"],
+            }
+            result = adapter.submit_job(job_for_dispatch, Path(job["output_pdf_path"]))
+            updated = update_print_job_status(job_id, result["status"], result["status_message"])
         else:
-            dispatch_mode = "WINDOWS_SPOOLER"
-        adapter = get_active_printer_adapter(mode=dispatch_mode)
-        job_for_dispatch = {
-            **job,
-            "printer_name": job.get("printer_name") or settings["default_printer_name"],
-        }
-        result = adapter.submit_job(job_for_dispatch, Path(job["output_pdf_path"]))
-        updated = update_print_job_status(job_id, result["status"], result["status_message"])
-    else:
-        default_messages = {
-            "COMPLETED": "Admin tomonidan 'Chop etildi' deb belgilandi.",
-            "CANCELLED": "Admin tomonidan bekor qilindi.",
-            "READY_IN_QUEUE": "Navbatga qaytarildi.",
-            "QUEUED_FOR_AGENT": "Raspberry Pi printer agent navbatiga qo'yildi.",
-            "PRINTING_ON_PI": "Raspberry Pi printerda chop etilmoqda.",
-            "SENT_TO_PRINTER": "Printerga yuborilgan deb belgilandi.",
-            "ERROR": "Xatolik holati belgilandi.",
-        }
-        msg = payload.status_message.strip() or default_messages.get(payload.status, "")
-        updated = update_print_job_status(job_id, payload.status, msg)
+            default_messages = {
+                "COMPLETED": "Admin tomonidan 'Chop etildi' deb belgilandi.",
+                "CANCELLED": "Admin tomonidan bekor qilindi.",
+                "READY_IN_QUEUE": "Navbatga qaytarildi.",
+                "WAITING_IN_QUEUE": "Kutish navbatiga qaytarildi.",
+                "AWAITING_CONFIRMATION": "Foydalanuvchi tasdiqlashi kutilmoqda.",
+                "QUEUED_FOR_AGENT": "Raspberry Pi printer agent navbatiga qo'yildi.",
+                "PRINTING_ON_PI": "Raspberry Pi printerda chop etilmoqda.",
+                "SENT_TO_PRINTER": "Printerga yuborilgan deb belgilandi.",
+                "ERROR": "Xatolik holati belgilandi.",
+            }
+            msg = payload.status_message.strip() or default_messages.get(payload.status, "")
+            updated = update_print_job_status(job_id, payload.status, msg)
 
-    assert updated is not None
-    return _job_to_response(updated)
+        assert updated is not None
+        active_job, waiting_jobs = _tick_and_advance_queue()
+        return _job_to_response(updated, active_job=active_job, waiting_jobs=waiting_jobs)
 
 
 @app.delete("/api/admin/print-jobs/{job_id}")
@@ -623,13 +962,15 @@ def admin_remove_print_job(
     job_id: str,
     _admin: str = Depends(require_admin),
 ) -> dict[str, bool]:
-    job = get_print_job(job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail="Buyurtma topilmadi.")
-    delete_print_job(job_id)
-    job_dir = JOBS_DIR / job_id
-    if job_dir.exists():
-        shutil.rmtree(job_dir, ignore_errors=True)
+    with QUEUE_LOCK:
+        job = get_print_job(job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="Buyurtma topilmadi.")
+        delete_print_job(job_id)
+        job_dir = JOBS_DIR / job_id
+        if job_dir.exists():
+            shutil.rmtree(job_dir, ignore_errors=True)
+        _tick_and_advance_queue()
     return {"deleted": True}
 
 
@@ -659,11 +1000,13 @@ def agent_poll_next_job(
         printers=printers_data,
         cpu_temp_c=payload.cpu_temp_c,
     )
-    claimed = claim_next_agent_job()
-    return {
-        "ok": True,
-        "job": _job_to_response(claimed).model_dump() if claimed else None,
-    }
+    with QUEUE_LOCK:
+        _tick_and_advance_queue()
+        claimed = claim_next_agent_job()
+        return {
+            "ok": True,
+            "job": _job_to_response(claimed).model_dump() if claimed else None,
+        }
 
 
 @app.post("/api/agent/jobs/{job_id}/report", response_model=PrintJobResponse)
@@ -672,18 +1015,20 @@ def agent_report_job_status(
     payload: AgentJobReportRequest,
     _agent: str = Depends(require_agent_key),
 ) -> PrintJobResponse:
-    job = get_print_job(job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail="Buyurtma topilmadi.")
-    default_msgs = {
-        "PRINTING_ON_PI": "Raspberry Pi CUPS printerida chop etilmoqda...",
-        "COMPLETED": "Raspberry Pi printer qog'ozni muvaffaqiyatli chiqardi.",
-        "ERROR": "Raspberry Pi printerida xatolik yuz berdi.",
-    }
-    msg = payload.status_message.strip() or default_msgs.get(payload.status, "")
-    updated = update_print_job_status(job_id, payload.status, msg)
-    assert updated is not None
-    return _job_to_response(updated)
+    with QUEUE_LOCK:
+        job = get_print_job(job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="Buyurtma topilmadi.")
+        default_msgs = {
+            "PRINTING_ON_PI": "Raspberry Pi CUPS printerida chop etilmoqda...",
+            "COMPLETED": "Raspberry Pi printer qog'ozni muvaffaqiyatli chiqardi.",
+            "ERROR": "Raspberry Pi printerida xatolik yuz berdi.",
+        }
+        msg = payload.status_message.strip() or default_msgs.get(payload.status, "")
+        updated = update_print_job_status(job_id, payload.status, msg)
+        assert updated is not None
+        active_job, waiting_jobs = _tick_and_advance_queue()
+        return _job_to_response(updated, active_job=active_job, waiting_jobs=waiting_jobs)
 
 
 if FRONTEND_DIR.exists():

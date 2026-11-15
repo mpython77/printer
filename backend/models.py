@@ -32,6 +32,7 @@ class PrintJobCreateRequest(BaseModel):
     paper_size: Literal["A4", "A5", "Letter"] = "A4"
     student_name: str = Field(default="", max_length=120)
     printer_name: str = Field(default="", max_length=200)
+    client_token: str = Field(default="", max_length=120)
 
 
 class PrintSegmentInfo(BaseModel):
@@ -73,6 +74,14 @@ class PrintJobResponse(BaseModel):
     pdf_url: str
     original_pdf_url: str
     created_at: str
+    client_token: str = ""
+    queue_state: str = "COMPLETED"
+    queue_position: int = 0
+    remaining_print_seconds: int = 0
+    confirm_remaining_seconds: int = 0
+    estimated_wait_seconds: int = 0
+    started_at: str = ""
+    completed_at: str = ""
 
 
 class PrinterInfo(BaseModel):
@@ -152,6 +161,8 @@ class AdminPasswordUpdateRequest(BaseModel):
 class JobStatusUpdateRequest(BaseModel):
     status: Literal[
         "READY_IN_QUEUE",
+        "WAITING_IN_QUEUE",
+        "AWAITING_CONFIRMATION",
         "QUEUED_FOR_AGENT",
         "PRINTING_ON_PI",
         "SENT_TO_PRINTER",
@@ -161,6 +172,49 @@ class JobStatusUpdateRequest(BaseModel):
         "DISPATCH_PRINTER",
     ]
     status_message: str = Field(default="", max_length=300)
+
+
+class JobConfirmRequest(BaseModel):
+    client_token: str = Field(default="", max_length=120)
+    extra_seconds: int = Field(default=15, ge=5, le=120)
+
+
+class QueuePublicJobItem(BaseModel):
+    id: str
+    student_name: str
+    original_filename: str
+    page_range_text: str
+    selected_page_count: int
+    copies: int
+    color_mode: str
+    duplex: str
+    physical_sheets: int
+    bw_sheets: int = 0
+    color_sheets: int = 0
+    estimated_seconds: int = 0
+    queue_state: str
+    status: str
+    status_message: str
+    queue_position: int = 0
+    remaining_print_seconds: int = 0
+    confirm_remaining_seconds: int = 0
+    estimated_wait_seconds: int = 0
+    client_token: str = ""
+    created_at: str
+    started_at: str = ""
+    completed_at: str = ""
+
+
+class LiveQueueStatusResponse(BaseModel):
+    printer_busy: bool
+    printer_state: Literal["IDLE", "PRINTING", "AWAITING_CONFIRMATION"]
+    printer_mode: str
+    active_job: QueuePublicJobItem | None = None
+    waiting_jobs: list[QueuePublicJobItem] = Field(default_factory=list)
+    recent_jobs: list[QueuePublicJobItem] = Field(default_factory=list)
+    waiting_count: int = 0
+    total_estimated_wait_seconds: int = 0
+    server_time: str
 
 
 class AgentHeartbeatRequest(BaseModel):
