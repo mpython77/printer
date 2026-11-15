@@ -17,10 +17,21 @@ from PIL import Image
 from pptx import Presentation
 from pypdf import PdfReader
 
-from backend.config import SAMPLES_DIR
-from backend.database import get_connection, get_settings, update_settings
+from backend.config import BACKUPS_DIR, DEFAULT_ADMIN_PASSWORD, SAMPLES_DIR, STORAGE_DIR
+from backend.database import (
+    checkpoint_wal,
+    create_db_backup,
+    create_print_job,
+    get_connection,
+    get_print_job,
+    get_settings,
+    init_db,
+    maybe_create_startup_backup,
+    recover_interrupted_jobs,
+    update_settings,
+)
 from backend.humo_verifier import parse_humo_topup_message
-from backend.main import app, reset_security_limiter
+from backend.main import _resolve_storage_file, app, reset_security_limiter
 from backend.services.converter import ensure_sample_pdf, normalize_to_pdf
 from backend.services.pdf_processor import (
     calculate_print_metrics,
@@ -1392,6 +1403,127 @@ class DocumentLayoutAndPreviewTests(unittest.TestCase):
 
         bad_res = self.client.get(f"/api/documents/{doc_id}/pages/99/image")
         self.assertEqual(bad_res.status_code, 404)
+
+
+class PersistenceAndBackupTests(unittest.TestCase):
+    def test_sqlite_wal_full_sync_and_backup_rotation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_dir = Path(tmp)
+            tmp_db = tmp_dir / "test_persist.db"
+            backups_dir = tmp_dir / "backups"
+            init_db(db_path=tmp_db)
+
+            with get_connection(db_path=tmp_db) as conn:
+                jm = conn.execute("PRAGMA journal_mode").fetchone()[0]
+                sync_val = conn.execute("PRAGMA synchronous").fetchone()[0]
+            self.assertEqual(str(jm).lower(), "wal")
+            self.assertEqual(int(sync_val), 2)  # 2 == FULL
+
+            b1 = create_db_backup(db_path=tmp_db, backups_dir=backups_dir, prefix="snap", max_keep=2)
+            time.sleep(0.02)
+            b2 = create_db_backup(db_path=tmp_db, backups_dir=backups_dir, prefix="snap", max_keep=2)
+            time.sleep(0.02)
+            b3 = create_db_backup(db_path=tmp_db, backups_dir=backups_dir, prefix="snap", max_keep=2)
+
+            self.assertFalse(b1.exists())
+            self.assertTrue(b2.exists())
+            self.assertTrue(b3.exists())
+            self.assertTrue(b3.read_bytes().startswith(b"SQLite format 3\x00"))
+
+            checkpoint_wal(db_path=tmp_db)
+            auto1 = maybe_create_startup_backup(db_path=tmp_db, backups_dir=backups_dir, min_age_seconds=3600)
+            self.assertIsNotNone(auto1)
+            auto2 = maybe_create_startup_backup(db_path=tmp_db, backups_dir=backups_dir, min_age_seconds=3600)
+            self.assertIsNone(auto2)
+
+    def test_recover_interrupted_jobs_and_portable_storage_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_db = Path(tmp) / "recover.db"
+            init_db(db_path=tmp_db)
+            with get_connection(db_path=tmp_db) as conn:
+                conn.execute(
+                    """
+                    INSERT INTO documents (id, original_filename, file_type, file_size, normalized_pdf_path, page_count, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    ("doc_rec_1", "doc.pdf", "pdf", 100, "storage/normalized/doc_rec_1.pdf", 1, "2026-11-16T00:00:00Z"),
+                )
+            now = time.time()
+            create_print_job(
+                {
+                    "id": "job_powercut_1",
+                    "document_id": "doc_rec_1",
+                    "original_filename": "doc.pdf",
+                    "student_name": "Talaba B",
+                    "selected_pages": [1],
+                    "page_range_text": "1",
+                    "rotations": {},
+                    "selected_page_count": 1,
+                    "copies": 1,
+                    "color_mode": "bw",
+                    "duplex": "simplex",
+                    "orientation": "portrait",
+                    "pages_per_sheet": 1,
+                    "paper_size": "A4",
+                    "total_printed_pages": 1,
+                    "physical_sheets": 1,
+                    "estimated_cost": 400,
+                    "estimated_seconds": 10,
+                    "printer_name": "",
+                    "printer_mode": "DRY_RUN",
+                    "status": "QUEUED_DRY_RUN",
+                    "status_message": "Chop etilmoqda",
+                    "output_pdf_path": "storage/jobs/job_powercut_1/print_ready.pdf",
+                    "created_at": "2026-11-16T00:00:00Z",
+                    "queue_state": "ACTIVE_PRINTING",
+                    "printing_until_ts": now - 600.0,
+                    "confirm_deadline_ts": 0.0,
+                },
+                db_path=tmp_db,
+            )
+
+            recovered = recover_interrupted_jobs(db_path=tmp_db, now_ts=now, confirm_timeout_seconds=90)
+            self.assertEqual(recovered, 1)
+            job_after = get_print_job("job_powercut_1", db_path=tmp_db)
+            assert job_after is not None
+            self.assertEqual(job_after["queue_state"], "AWAITING_CONFIRMATION")
+            self.assertAlmostEqual(float(job_after["confirm_deadline_ts"]), now + 90.0, delta=1.0)
+
+        # Portable storage resolution across OS / moved folders
+        sample_target = STORAGE_DIR / "samples" / "portable_probe.tmp"
+        sample_target.parent.mkdir(parents=True, exist_ok=True)
+        sample_target.write_bytes(b"ok")
+        try:
+            resolved = _resolve_storage_file(r"C:\MovedLaptop\TLG_PRINTER\storage\samples\portable_probe.tmp")
+            self.assertEqual(resolved.resolve(), sample_target.resolve())
+        finally:
+            sample_target.unlink(missing_ok=True)
+
+    def test_admin_backup_download_requires_auth_and_returns_sqlite(self) -> None:
+        reset_security_limiter()
+        client = TestClient(app)
+        anon_res = client.get("/api/admin/backup")
+        self.assertEqual(anon_res.status_code, 401)
+
+        login_res = client.post(
+            "/api/admin/login",
+            json={"username": "admin", "password": DEFAULT_ADMIN_PASSWORD},
+        )
+        self.assertEqual(login_res.status_code, 200)
+        token = login_res.json()["token"]
+
+        created_name = ""
+        try:
+            res = client.get("/api/admin/backup", headers={"Authorization": f"Bearer {token}"})
+            self.assertEqual(res.status_code, 200)
+            self.assertTrue(res.content.startswith(b"SQLite format 3\x00"))
+            disp = res.headers.get("content-disposition", "")
+            self.assertIn("smartprint_manual_", disp)
+            if 'filename="' in disp:
+                created_name = disp.split('filename="', 1)[1].split('"', 1)[0]
+        finally:
+            if created_name:
+                (BACKUPS_DIR / created_name).unlink(missing_ok=True)
 
 
 if __name__ == "__main__":

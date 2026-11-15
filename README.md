@@ -59,6 +59,7 @@ Yuqori o'ng burchakdagi **Admin kirish** tugmasi orqali kiriladi:
 - **Standart login:** `admin`
 - **Standart parol:** `admin123` (birinchi marta ishga tushirishda `TLG_ADMIN_PASSWORD` env orqali o'zgartirish yoki kirgach Admin paneldan darhol yangilash tavsiya etiladi)
 - **Xavfsizlik eslatmasi:** `storage/` papkasi, `.env` fayllari va Telegram sessiyalari `.gitignore` ga kiritilgan. Public serverda `TLG_AGENT_KEY` uchun alohida kuchli kalit ishlating.
+- **Ma'lumotlar saqlanishi va zaxira nusxa (Backup):** Barcha buyurtmalar, narxlar, Telegram sessiyasi va fayllar `storage/` papkasida (SQLite `WAL + synchronous=FULL`) saqlanadi hamda ishga tushganda `storage/backups/` ga avtomatik zaxiralanadi. Raspberry Pi SD karta nosozligidan saqlanish uchun `TLG_STORAGE_DIR` muhit o'zgaruvchisi orqali USB SSD/tashqi disk manzilini ko'rsatish va Admin panel -> **Xavfsizlik** bo'limidan `.db` zaxira nusxani yuklab olish mumkin.
 
 ## Testlarni ishga tushirish
 

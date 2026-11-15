@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import atexit
 import base64
 import hashlib
 import hmac
@@ -39,15 +40,18 @@ from backend.config import (
     MAX_UPLOAD_SIZE_BYTES,
     NORMALIZED_DIR,
     SAMPLES_DIR,
+    STORAGE_DIR,
     UPLOADS_DIR,
     ensure_directories,
 )
 from backend.database import (
     QUEUE_LOCK,
+    checkpoint_wal,
     claim_next_agent_job,
     clear_all_print_jobs,
     compute_job_queue_enrichment,
     count_unfinished_jobs_for_token,
+    create_db_backup,
     create_print_job,
     delete_print_job,
     get_active_queue_job,
@@ -60,7 +64,9 @@ from backend.database import (
     list_print_jobs,
     list_recent_completed_jobs,
     list_waiting_queue_jobs,
+    maybe_create_startup_backup,
     record_agent_heartbeat,
+    recover_interrupted_jobs,
     save_document,
     update_admin_credentials,
     update_job_queue_fields,
@@ -118,9 +124,13 @@ from backend.services.printer_adapter import (
 )
 
 ADMIN_TOKEN_TTL_SECONDS = 12 * 3600
+CONFIRM_TIMEOUT_SECONDS = 90
 
 ensure_directories()
 init_db()
+recover_interrupted_jobs(confirm_timeout_seconds=CONFIRM_TIMEOUT_SECONDS)
+maybe_create_startup_backup()
+atexit.register(checkpoint_wal)
 
 app = FastAPI(
     title="TLG SmartPrint API",
@@ -265,7 +275,26 @@ def _doc_to_response(doc: dict) -> DocumentResponse:
     )
 
 
-CONFIRM_TIMEOUT_SECONDS = 90
+def _resolve_storage_file(raw_path: str, *fallbacks: Path) -> Path:
+    """Resolve stored file paths portably across laptop/Raspberry Pi moves or TLG_STORAGE_DIR changes."""
+    cleaned = (raw_path or "").strip()
+    if cleaned:
+        direct = Path(cleaned)
+        if direct.exists():
+            return direct
+        norm = cleaned.replace("\\", "/")
+        for marker in ("/storage/", "storage/"):
+            idx = norm.lower().find(marker)
+            if idx != -1:
+                rel = norm[idx + len(marker) :].lstrip("/")
+                if rel:
+                    relocated = STORAGE_DIR / rel
+                    if relocated.exists():
+                        return relocated
+    for fb in fallbacks:
+        if fb and fb.exists():
+            return fb
+    return Path(cleaned) if cleaned else (fallbacks[0] if fallbacks else STORAGE_DIR)
 
 
 def _build_device_id(client_token: str, client_ip: str = "", user_agent: str = "") -> str:
@@ -535,7 +564,11 @@ def _dispatch_job_to_printer(job: dict) -> tuple[str, dict]:
         "printer_name": target_printer,
         "printer_mode": adapter.mode_name,
     }
-    result = adapter.submit_job(dispatch_stub, Path(job["output_pdf_path"]))
+    output_pdf = _resolve_storage_file(
+        job.get("output_pdf_path", ""),
+        JOBS_DIR / job["id"] / "print_ready.pdf",
+    )
+    result = adapter.submit_job(dispatch_stub, output_pdf)
     return adapter.mode_name, result
 
 
@@ -763,7 +796,10 @@ def serve_document_pdf(doc_id: str) -> FileResponse:
     doc = get_document(doc_id)
     if not doc:
         raise HTTPException(status_code=404, detail="Hujjat topilmadi.")
-    pdf_path = Path(doc["normalized_pdf_path"])
+    pdf_path = _resolve_storage_file(
+        doc.get("normalized_pdf_path", ""),
+        NORMALIZED_DIR / f"{doc['id']}.pdf",
+    )
     if not pdf_path.exists():
         raise HTTPException(status_code=404, detail="PDF fayl diskda topilmadi.")
     return FileResponse(
@@ -788,7 +824,10 @@ def serve_document_page_image(
     doc = get_document(doc_id)
     if not doc:
         raise HTTPException(status_code=404, detail="Hujjat topilmadi.")
-    pdf_path = Path(doc["normalized_pdf_path"])
+    pdf_path = _resolve_storage_file(
+        doc.get("normalized_pdf_path", ""),
+        NORMALIZED_DIR / f"{doc['id']}.pdf",
+    )
     if not pdf_path.exists():
         raise HTTPException(status_code=404, detail="PDF fayl diskda topilmadi.")
 
@@ -900,7 +939,10 @@ def submit_print_job(
 
     try:
         sliced_count = slice_pdf_for_print(
-            source_pdf_path=Path(doc["normalized_pdf_path"]),
+            source_pdf_path=_resolve_storage_file(
+                doc.get("normalized_pdf_path", ""),
+                NORMALIZED_DIR / f"{doc['id']}.pdf",
+            ),
             output_pdf_path=output_pdf_path,
             selected_pages=selected_pages,
             rotations=payload.rotations,
@@ -1265,7 +1307,10 @@ def serve_job_pdf(
         authorization=authorization,
         x_agent_key=x_agent_key,
     )
-    pdf_path = Path(job["output_pdf_path"])
+    pdf_path = _resolve_storage_file(
+        job.get("output_pdf_path", ""),
+        JOBS_DIR / job_id / "print_ready.pdf",
+    )
     if not pdf_path.exists():
         raise HTTPException(status_code=404, detail="Tayyorlangan PDF topilmadi.")
     return FileResponse(
@@ -1302,7 +1347,10 @@ def serve_job_segment_pdf(
         raise HTTPException(status_code=404, detail="Chop etish segmenti topilmadi.")
     seg_path = JOBS_DIR / job_id / seg["pdf_filename"]
     if not seg_path.exists():
-        seg_path = Path(job["output_pdf_path"])
+        seg_path = _resolve_storage_file(
+            job.get("output_pdf_path", ""),
+            JOBS_DIR / job_id / "print_ready.pdf",
+        )
     if not seg_path.exists():
         raise HTTPException(status_code=404, detail="Segment PDF fayli diskda topilmadi.")
     return FileResponse(
@@ -1372,7 +1420,11 @@ def _enqueue_or_dispatch_paid_job(job_id: str) -> tuple[dict, dict | None, list[
             "printer_name": target_printer,
             "printer_mode": adapter.mode_name,
         }
-        dispatch_result = adapter.submit_job(job_for_dispatch, Path(job["output_pdf_path"]))
+        output_pdf = _resolve_storage_file(
+            job.get("output_pdf_path", ""),
+            JOBS_DIR / job["id"] / "print_ready.pdf",
+        )
+        dispatch_result = adapter.submit_job(job_for_dispatch, output_pdf)
         duration = max(1, int(job.get("estimated_seconds") or 5))
         updated = update_job_queue_fields(
             job_id,
@@ -1621,7 +1673,10 @@ def admin_get_job_receipt(
     raw_path = (job.get("receipt_path") or "").strip()
     if not raw_path:
         raise HTTPException(status_code=404, detail="Ushbu buyurtma uchun to'lov cheki yuklanmagan.")
-    receipt_file = Path(raw_path)
+    receipt_file = _resolve_storage_file(
+        raw_path,
+        JOBS_DIR / job_id / f"receipt{Path(raw_path).suffix}",
+    )
     if not receipt_file.exists():
         raise HTTPException(status_code=404, detail="Chek fayli diskda topilmadi.")
     media_type, _ = mimetypes.guess_type(str(receipt_file))
@@ -1687,6 +1742,20 @@ def admin_update_settings(
     return _settings_to_payload(updated)
 
 
+@app.get("/api/admin/backup")
+def admin_download_db_backup(_admin: str = Depends(require_admin)) -> FileResponse:
+    """Create and download an online atomic SQLite backup snapshot of smartprint.db."""
+    backup_path = create_db_backup(prefix="smartprint_manual", max_keep=10)
+    return FileResponse(
+        path=backup_path,
+        media_type="application/vnd.sqlite3",
+        headers={
+            "Content-Disposition": f'attachment; filename="{backup_path.name}"',
+            "Cache-Control": "no-store",
+        },
+    )
+
+
 @app.put("/api/admin/credentials")
 def admin_update_credentials(
     payload: AdminPasswordUpdateRequest,
@@ -1747,7 +1816,11 @@ def admin_update_job(
                 **job,
                 "printer_name": job.get("printer_name") or settings["default_printer_name"],
             }
-            result = adapter.submit_job(job_for_dispatch, Path(job["output_pdf_path"]))
+            output_pdf = _resolve_storage_file(
+                job.get("output_pdf_path", ""),
+                JOBS_DIR / job["id"] / "print_ready.pdf",
+            )
+            result = adapter.submit_job(job_for_dispatch, output_pdf)
             updated = update_print_job_status(job_id, result["status"], result["status_message"])
         else:
             default_messages = {

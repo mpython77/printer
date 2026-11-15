@@ -287,6 +287,28 @@ window.SmartPrintApi = (() => {
     return handleResponse(res);
   }
 
+  async function downloadDatabaseBackup() {
+    const res = await fetch("/api/admin/backup", {
+      headers: authHeaders(),
+    });
+    if (!res.ok) {
+      return handleResponse(res);
+    }
+    const blob = await res.blob();
+    const disp = res.headers.get("content-disposition") || "";
+    const match = disp.match(/filename="([^"]+)"/i);
+    const filename = match ? match[1] : `smartprint_backup_${Date.now()}.db`;
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    return { filename };
+  }
+
   return {
     getClientToken,
     getAdminToken,
@@ -306,6 +328,7 @@ window.SmartPrintApi = (() => {
     updateAdminJobStatus,
     deleteAdminPrintJob,
     clearAdminPrintJobs,
+    downloadDatabaseBackup,
     verifyJobPayment,
     renewJobPayment,
     getReceiptUrl,

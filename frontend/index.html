@@ -778,6 +778,21 @@
               </div>
               <button type="button" id="saveCredentialsBtn" class="btn btn-primary">Login va parolni yangilash</button>
             </div>
+
+            <hr class="admin-divider" />
+
+            <div class="admin-section-label">Ma'lumotlar saqlanishi va zaxira nusxa (Backup)</div>
+            <div class="admin-narrow">
+              <p class="card-desc">
+                Buyurtmalar, sozlamalar, to'lovlar va Telegram sessiyasi diskdagi <code>storage/</code> papkasida
+                quvvat o'chishidan himoyalangan SQLite (WAL + FULL sync) rejimida saqlanadi hamda
+                <code>storage/backups/</code> ga avtomatik nusxalanadi. Muhim o'zgarishlardan so'ng nusxani
+                kompyuteringizga yuklab qo'ying.
+              </p>
+              <button type="button" id="downloadDbBackupBtn" class="btn btn-secondary">
+                Bazadan zaxira nusxa yuklab olish (.db)
+              </button>
+            </div>
           </div>
         </div>
       </div>

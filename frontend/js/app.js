@@ -150,6 +150,7 @@
     currentAdminPassword: document.getElementById("currentAdminPassword"),
     newAdminPassword: document.getElementById("newAdminPassword"),
     saveCredentialsBtn: document.getElementById("saveCredentialsBtn"),
+    downloadDbBackupBtn: document.getElementById("downloadDbBackupBtn"),
 
     // Payment & Telegram Controls
     paymentEnabledInput: document.getElementById("paymentEnabledInput"),
@@ -1942,6 +1943,19 @@
       el.refreshHumoPaymentsBtn.addEventListener("click", () => loadRecentHumoPayments({ silent: false }));
     }
     el.saveCredentialsBtn.addEventListener("click", handleUpdateCredentials);
+    if (el.downloadDbBackupBtn) {
+      el.downloadDbBackupBtn.addEventListener("click", async () => {
+        el.downloadDbBackupBtn.disabled = true;
+        try {
+          const result = await SmartPrintApi.downloadDatabaseBackup();
+          showToast(`Zaxira nusxa yuklandi: ${result.filename}`, "success");
+        } catch (err) {
+          showToast(err.message, "error");
+        } finally {
+          el.downloadDbBackupBtn.disabled = false;
+        }
+      });
+    }
     el.adminJobSearchInput.addEventListener("input", renderAdminJobsList);
     el.adminJobStatusFilter.addEventListener("change", renderAdminJobsList);
     el.adminClearJobsBtn.addEventListener("click", async () => {

@@ -7,11 +7,17 @@ from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 FRONTEND_DIR = BASE_DIR / "frontend"
-STORAGE_DIR = BASE_DIR / "storage"
+_env_storage = os.environ.get("TLG_STORAGE_DIR", "").strip()
+STORAGE_DIR = (
+    Path(_env_storage).expanduser().resolve()
+    if _env_storage
+    else (BASE_DIR / "storage")
+)
 UPLOADS_DIR = STORAGE_DIR / "uploads"
 NORMALIZED_DIR = STORAGE_DIR / "normalized"
 JOBS_DIR = STORAGE_DIR / "jobs"
 SAMPLES_DIR = STORAGE_DIR / "samples"
+BACKUPS_DIR = STORAGE_DIR / "backups"
 DB_PATH = STORAGE_DIR / "smartprint.db"
 
 # Printer mode:
@@ -61,7 +67,7 @@ MAX_UPLOAD_SIZE_BYTES = 50 * 1024 * 1024  # 50 MB
 
 def ensure_directories() -> None:
     """Create required storage directories if they do not exist."""
-    for directory in (STORAGE_DIR, UPLOADS_DIR, NORMALIZED_DIR, JOBS_DIR, SAMPLES_DIR):
+    for directory in (STORAGE_DIR, UPLOADS_DIR, NORMALIZED_DIR, JOBS_DIR, SAMPLES_DIR, BACKUPS_DIR):
         directory.mkdir(parents=True, exist_ok=True)
 
 

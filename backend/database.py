@@ -18,6 +18,7 @@ from typing import Any, Iterator
 QUEUE_LOCK = threading.RLock()
 
 from backend.config import (
+    BACKUPS_DIR,
     DB_PATH,
     DEFAULT_ADMIN_PASSWORD,
     DEFAULT_AGENT_KEY,
@@ -60,18 +61,121 @@ def _verify_password(password: str, stored_hash: str) -> bool:
 
 @contextmanager
 def get_connection(db_path: Path | None = None) -> Iterator[sqlite3.Connection]:
-    """Yield a SQLite connection configured with WAL mode and busy timeout."""
+    """Yield a power-loss-safe SQLite connection configured with WAL mode, FULL sync, and busy timeout."""
     target = db_path or DB_PATH
     target.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(target), timeout=30.0, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=FULL")
+    conn.execute("PRAGMA foreign_keys=ON")
     conn.execute("PRAGMA busy_timeout=30000")
     try:
         yield conn
         conn.commit()
     finally:
         conn.close()
+
+
+def checkpoint_wal(db_path: Path | None = None) -> None:
+    """Flush SQLite WAL frames into the main database file so clean shutdown leaves a single self-contained file."""
+    target = db_path or DB_PATH
+    if not target.exists():
+        return
+    try:
+        conn = sqlite3.connect(str(target), timeout=10.0, check_same_thread=False)
+        try:
+            conn.execute("PRAGMA busy_timeout=10000")
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        pass
+
+
+def create_db_backup(
+    db_path: Path | None = None,
+    backups_dir: Path | None = None,
+    prefix: str = "smartprint_backup",
+    max_keep: int = 7,
+) -> Path:
+    """Create an online atomic SQLite backup snapshot and prune older snapshots beyond max_keep."""
+    target_db = db_path or DB_PATH
+    target_dir = backups_dir or BACKUPS_DIR
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    if not target_db.exists():
+        init_db(db_path=target_db)
+
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f")
+    dest = target_dir / f"{prefix}_{stamp}.db"
+    tmp_dest = target_dir / f".{prefix}_{stamp}.tmp"
+
+    src_conn = sqlite3.connect(str(target_db), timeout=30.0, check_same_thread=False)
+    try:
+        dst_conn = sqlite3.connect(str(tmp_dest), timeout=30.0, check_same_thread=False)
+        try:
+            src_conn.backup(dst_conn)
+            dst_conn.commit()
+        finally:
+            dst_conn.close()
+    finally:
+        src_conn.close()
+
+    tmp_dest.replace(dest)
+
+    if max_keep > 0:
+        existing = sorted(target_dir.glob(f"{prefix}_*.db"), key=lambda p: p.stat().st_mtime, reverse=True)
+        for stale in existing[max_keep:]:
+            stale.unlink(missing_ok=True)
+
+    return dest
+
+
+def maybe_create_startup_backup(
+    db_path: Path | None = None,
+    backups_dir: Path | None = None,
+    min_age_seconds: int = 3600,
+) -> Path | None:
+    """Create a rolling automatic backup on boot unless a recent snapshot already exists."""
+    target_db = db_path or DB_PATH
+    if not target_db.exists() or target_db.stat().st_size == 0:
+        return None
+    target_dir = backups_dir or BACKUPS_DIR
+    target_dir.mkdir(parents=True, exist_ok=True)
+    recent = sorted(target_dir.glob("smartprint_auto_*.db"), key=lambda p: p.stat().st_mtime, reverse=True)
+    if recent and (time.time() - recent[0].stat().st_mtime) < min_age_seconds:
+        return None
+    return create_db_backup(
+        db_path=target_db,
+        backups_dir=target_dir,
+        prefix="smartprint_auto",
+        max_keep=7,
+    )
+
+
+def recover_interrupted_jobs(
+    db_path: Path | None = None,
+    now_ts: float | None = None,
+    confirm_timeout_seconds: int = 90,
+) -> int:
+    """Prevent active jobs interrupted by unexpected power loss from silently auto-closing on reboot."""
+    now = time.time() if now_ts is None else now_ts
+    new_deadline = now + max(30, int(confirm_timeout_seconds))
+    msg = "Qurilma qayta ishga tushdi — qog'ozlar chiqqanini tekshirib tasdiqlang yoki qayta chiqaring."
+    with QUEUE_LOCK, get_connection(db_path) as conn:
+        cur = conn.execute(
+            """
+            UPDATE print_jobs
+            SET queue_state = 'AWAITING_CONFIRMATION',
+                confirm_deadline_ts = ?,
+                status_message = ?
+            WHERE (queue_state = 'ACTIVE_PRINTING' AND printing_until_ts > 0 AND printing_until_ts <= ?)
+               OR (queue_state = 'AWAITING_CONFIRMATION' AND confirm_deadline_ts > 0 AND confirm_deadline_ts <= ?)
+            """,
+            (new_deadline, msg, now, now),
+        )
+    return cur.rowcount
 
 
 def init_db(db_path: Path | None = None) -> None:
