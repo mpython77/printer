@@ -61,6 +61,7 @@ from backend.database import (
     get_settings,
     get_token_secret,
     init_db,
+    list_active_jobs_for_token,
     list_print_jobs,
     list_recent_completed_jobs,
     list_waiting_queue_jobs,
@@ -1192,6 +1193,62 @@ def get_live_print_queue(
         waiting_count=len(waiting_jobs),
         total_estimated_wait_seconds=total_wait,
         server_time=datetime.now(timezone.utc).isoformat(),
+    )
+
+
+@app.get("/api/client/active-jobs", response_model=list[PrintJobResponse])
+def get_my_active_jobs(
+    x_client_token: str = Header(default=""),
+    client_token: str = "",
+) -> list[PrintJobResponse]:
+    """Return active/awaiting-payment jobs owned by caller_token so page reloads restore state cleanly."""
+    caller_token = (x_client_token or client_token or "").strip()
+    if not caller_token:
+        return []
+    with QUEUE_LOCK:
+        now = time.time()
+        active_job, waiting_jobs = _tick_and_advance_queue(now_ts=now)
+        my_jobs = list_active_jobs_for_token(caller_token)
+    return [
+        _job_to_response(
+            j,
+            active_job=active_job,
+            waiting_jobs=waiting_jobs,
+            now_ts=now,
+            caller_token=caller_token,
+            include_secret_token=False,
+            include_admin_fields=False,
+        )
+        for j in my_jobs
+    ]
+
+
+@app.get("/api/print-jobs/{job_id}", response_model=PrintJobResponse)
+def get_print_job_detail(
+    job_id: str,
+    x_client_token: str = Header(default=""),
+    client_token: str = "",
+    authorization: str = Header(default=""),
+) -> PrintJobResponse:
+    """Fetch a single job's full owner/admin view for refresh and countdown restoration."""
+    caller_token = (x_client_token or client_token or "").strip()
+    is_admin = _is_valid_admin_auth(authorization)
+    with QUEUE_LOCK:
+        now = time.time()
+        active_job, waiting_jobs = _tick_and_advance_queue(now_ts=now)
+        job = get_print_job(job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="Buyurtma topilmadi.")
+        if not is_admin:
+            _authorize_client_action(job, caller_token)
+    return _job_to_response(
+        job,
+        active_job=active_job,
+        waiting_jobs=waiting_jobs,
+        now_ts=now,
+        caller_token=caller_token,
+        include_secret_token=False,
+        include_admin_fields=is_admin,
     )
 
 

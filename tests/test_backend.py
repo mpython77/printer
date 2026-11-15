@@ -1401,6 +1401,91 @@ class ApiIntegrationTests(unittest.TestCase):
             for jid in created_ids:
                 self.client.delete(f"/api/admin/print-jobs/{jid}", headers=admin_headers)
 
+    def test_refresh_session_recovery_client_active_jobs_and_owner_isolation(self) -> None:
+        update_settings({"payment_enabled": True, "payment_window_seconds": 120})
+        login_res = self.client.post(
+            "/api/admin/login", json={"username": "admin", "password": "admin123"}
+        )
+        admin_headers = {"Authorization": f"Bearer {login_res.json()['token']}"}
+
+        doc = self.client.post("/api/documents/sample").json()
+        # Verify GET /api/documents/{doc_id} used on refresh draft restore works
+        doc_fetch = self.client.get(f"/api/documents/{doc['id']}")
+        self.assertEqual(doc_fetch.status_code, 200)
+        self.assertEqual(doc_fetch.json()["id"], doc["id"])
+
+        tok_alice = f"stu_alice_{uuid.uuid4().hex[:8]}"
+        tok_bob = f"stu_bob_{uuid.uuid4().hex[:8]}"
+        created_ids: list[str] = []
+        try:
+            job_res = self.client.post(
+                "/api/print-jobs",
+                headers={"X-Client-Token": tok_alice},
+                json={
+                    "document_id": doc["id"],
+                    "selected_pages": [1, 2],
+                    "copies": 1,
+                    "color_mode": "bw",
+                    "duplex": "simplex",
+                    "student_name": "Alice",
+                    "client_token": tok_alice,
+                },
+            )
+            self.assertEqual(job_res.status_code, 200, job_res.text)
+            job = job_res.json()
+            created_ids.append(job["id"])
+            self.assertEqual(job["queue_state"], "AWAITING_PAYMENT")
+
+            # Empty token never sees any jobs
+            anon_list = self.client.get("/api/client/active-jobs")
+            self.assertEqual(anon_list.status_code, 200)
+            self.assertEqual(anon_list.json(), [])
+
+            # Bob cannot see Alice's awaiting-payment job in active-jobs or via job detail
+            bob_list = self.client.get(
+                "/api/client/active-jobs", headers={"X-Client-Token": tok_bob}
+            )
+            self.assertEqual(bob_list.status_code, 200)
+            self.assertEqual(bob_list.json(), [])
+
+            bob_detail = self.client.get(
+                f"/api/print-jobs/{job['id']}", headers={"X-Client-Token": tok_bob}
+            )
+            self.assertEqual(bob_detail.status_code, 403)
+
+            # Alice after refresh restores her pending payment job cleanly
+            alice_list = self.client.get(
+                "/api/client/active-jobs", headers={"X-Client-Token": tok_alice}
+            )
+            self.assertEqual(alice_list.status_code, 200)
+            items = alice_list.json()
+            self.assertEqual(len(items), 1)
+            self.assertEqual(items[0]["id"], job["id"])
+            self.assertEqual(items[0]["queue_state"], "AWAITING_PAYMENT")
+            self.assertGreater(items[0]["payment_remaining_seconds"], 0)
+            self.assertEqual(items[0]["client_ip"], "")
+
+            alice_detail = self.client.get(
+                f"/api/print-jobs/{job['id']}", headers={"X-Client-Token": tok_alice}
+            )
+            self.assertEqual(alice_detail.status_code, 200)
+            self.assertEqual(alice_detail.json()["id"], job["id"])
+
+            # After cancellation, awaiting job disappears from active-jobs
+            cancel_res = self.client.post(
+                f"/api/print-jobs/{job['id']}/cancel",
+                headers={"X-Client-Token": tok_alice},
+                json={"client_token": tok_alice},
+            )
+            self.assertEqual(cancel_res.status_code, 200)
+            alice_after = self.client.get(
+                "/api/client/active-jobs", headers={"X-Client-Token": tok_alice}
+            )
+            self.assertEqual(alice_after.json(), [])
+        finally:
+            for jid in created_ids:
+                self.client.delete(f"/api/admin/print-jobs/{jid}", headers=admin_headers)
+
 
 class DocumentLayoutAndPreviewTests(unittest.TestCase):
     def setUp(self) -> None:

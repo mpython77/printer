@@ -716,6 +716,29 @@ def count_unfinished_jobs_for_token(
     return int(row["cnt"] if row else 0)
 
 
+def list_active_jobs_for_token(
+    client_token: str,
+    limit: int = 10,
+    db_path: Path | None = None,
+) -> list[dict[str, Any]]:
+    """Return active/pending jobs strictly belonging to client_token (newest first)."""
+    clean = (client_token or "").strip()
+    if not clean:
+        return []
+    with get_connection(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT * FROM print_jobs
+            WHERE client_token = ?
+              AND queue_state IN ('AWAITING_PAYMENT', 'WAITING_IN_QUEUE', 'ACTIVE_PRINTING', 'AWAITING_CONFIRMATION')
+            ORDER BY created_at DESC, rowid DESC
+            LIMIT ?
+            """,
+            (clean, max(1, min(25, int(limit)))),
+        ).fetchall()
+    return [_row_to_job(r) for r in rows]
+
+
 def get_active_queue_job(db_path: Path | None = None) -> dict[str, Any] | None:
     """Return the job currently occupying the physical printer or awaiting student confirmation."""
     with get_connection(db_path) as conn:

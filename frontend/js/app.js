@@ -4,6 +4,11 @@
 (() => {
   const { SmartPrintApi, PageSelector, PdfRenderer } = window;
 
+  const STUDIO_DRAFT_KEY = "tlg_smartprint_studio_draft_v1";
+  const MODAL_STATE_KEY = "tlg_smartprint_modal_state_v1";
+  const ADMIN_VIEW_KEY = "tlg_smartprint_admin_view_v1";
+  const ADMIN_TAB_KEY = "tlg_smartprint_admin_tab_v1";
+
   const state = {
     systemStatus: null,
     currentDoc: null,
@@ -22,10 +27,14 @@
     adminDashboard: null,
     countdownTimer: null,
     liveQueue: null,
+    myActiveJobs: [],
     activeModalJob: null,
     showQueueDetails: false,
     queuePollTimer: null,
     isPollingQueue: false,
+    isRestoringSession: false,
+    pendingRestoredPrinterName: "",
+    pendingScanRefreshTimer: null,
     telegramPendingAuthToken: "",
   };
 
@@ -46,6 +55,7 @@
     toggleQueueDetailsBtn: document.getElementById("toggleQueueDetailsBtn"),
     liveActiveJobBox: document.getElementById("liveActiveJobBox"),
     liveConfirmPrompt: document.getElementById("liveConfirmPrompt"),
+    myPendingPaymentBanner: document.getElementById("myPendingPaymentBanner"),
     liveQueueColumns: document.getElementById("liveQueueColumns"),
     liveWaitingCountPill: document.getElementById("liveWaitingCountPill"),
     liveWaitingList: document.getElementById("liveWaitingList"),
@@ -261,8 +271,84 @@
     }
   }
 
+  function readJsonStorage(storageObj, key, fallback = null) {
+    try {
+      const raw = storageObj.getItem(key);
+      return raw ? JSON.parse(raw) : fallback;
+    } catch (_) {
+      return fallback;
+    }
+  }
+
+  function saveStudioDraft() {
+    if (state.isRestoringSession || !state.currentDoc) return;
+    try {
+      const payload = {
+        docId: state.currentDoc.id,
+        selectedPages: Array.from(state.selectedPages).sort((a, b) => a - b),
+        rotations: state.rotations,
+        copies: state.copies,
+        colorMode: state.colorMode,
+        colorPages: Array.from(state.colorPages).sort((a, b) => a - b),
+        colorPagesText: el.colorPagesInput ? el.colorPagesInput.value : "",
+        orientation: state.orientation,
+        pagesPerSheet: state.pagesPerSheet,
+        paperSize: state.paperSize,
+        studentName: el.studentNameInput ? el.studentNameInput.value : "",
+        printerName: el.printerSelect ? el.printerSelect.value : "",
+        savedAt: Date.now(),
+      };
+      localStorage.setItem(STUDIO_DRAFT_KEY, JSON.stringify(payload));
+    } catch (_) {
+      // Ignore storage quota errors
+    }
+  }
+
+  function clearStudioDraft() {
+    try {
+      localStorage.removeItem(STUDIO_DRAFT_KEY);
+    } catch (_) {
+      // Ignore
+    }
+  }
+
+  function saveModalState(openJobId, dismissedJobId = "") {
+    try {
+      localStorage.setItem(
+        MODAL_STATE_KEY,
+        JSON.stringify({
+          openJobId: openJobId || "",
+          dismissedJobId: dismissedJobId || "",
+          savedAt: Date.now(),
+        })
+      );
+    } catch (_) {
+      // Ignore
+    }
+  }
+
+  function setActiveAdminTab(tabName) {
+    const target = tabName || "orders";
+    try {
+      sessionStorage.setItem(ADMIN_TAB_KEY, target);
+    } catch (_) {
+      // Ignore
+    }
+    document.querySelectorAll(".admin-nav-btn[data-admin-tab]").forEach((b) => {
+      b.classList.toggle("is-active", b.getAttribute("data-admin-tab") === target);
+    });
+    document.querySelectorAll("#adminView [data-admin-panel]").forEach((panel) => {
+      panel.classList.toggle("hidden", panel.getAttribute("data-admin-panel") !== target);
+    });
+  }
+
   function setActiveView(viewName) {
     const isAdmin = viewName === "admin";
+    try {
+      sessionStorage.setItem(ADMIN_VIEW_KEY, isAdmin ? "admin" : "student");
+    } catch (_) {
+      // Ignore
+    }
     el.studentView.classList.toggle("is-active", !isAdmin);
     el.adminView.classList.toggle("is-active", isAdmin);
 
@@ -310,7 +396,8 @@
         if (el.segColorPriceBadge) el.segColorPriceBadge.textContent = colorPriceStr;
       }
 
-      const currentVal = el.printerSelect.value;
+      const currentVal = state.pendingRestoredPrinterName || el.printerSelect.value;
+      state.pendingRestoredPrinterName = "";
       el.printerSelect.innerHTML = `<option value="">Avtomatik (Keyin ulanadi)</option>`;
       physicalPrinters.forEach((printer) => {
         const opt = document.createElement("option");
@@ -318,7 +405,7 @@
         opt.textContent = `${printer.name} — ${printer.status_text}`;
         el.printerSelect.appendChild(opt);
       });
-      if (currentVal) {
+      if (currentVal && Array.from(el.printerSelect.options).some((o) => o.value === currentVal)) {
         el.printerSelect.value = currentVal;
       } else if (preferred) {
         el.printerSelect.value = preferred.name;
@@ -368,30 +455,118 @@
     }
   }
 
-  async function openDocumentInStudio(doc) {
-    state.currentDoc = doc;
-    state.rotations = {};
-    state.colorPages = new Set();
-    if (el.colorPagesInput) {
-      el.colorPagesInput.value = "";
+  function applyStudioDraft(doc, savedDraft) {
+    const pageCount = Math.max(1, parseInt(doc.page_count, 10) || 1);
+    const allPages = Array.from({ length: pageCount }, (_, i) => i + 1);
+    if (!savedDraft || typeof savedDraft !== "object") {
+      state.rotations = {};
+      state.colorPages = new Set();
+      state.selectedPages = new Set(allPages);
+      state.copies = 1;
+      state.colorMode = "bw";
+      state.orientation = "portrait";
+      state.pagesPerSheet = 1;
+      state.paperSize = "A4";
+      if (el.colorPagesInput) el.colorPagesInput.value = "";
+      if (el.copiesValue) el.copiesValue.textContent = "1";
+      if (el.pagesPerSheetSelect) el.pagesPerSheetSelect.value = "1";
+      if (el.paperSizeSelect) el.paperSizeSelect.value = "A4";
+      el.orientPortraitBtn.classList.add("is-active");
+      el.orientLandscapeBtn.classList.remove("is-active");
+      setColorMode("bw");
+      return;
     }
-    state.selectedPages = new Set(Array.from({ length: doc.page_count }, (_, i) => i + 1));
 
-    el.docFileTypeBadge.textContent = (doc.file_type || "PDF").toUpperCase();
-    el.docTitleText.textContent = doc.original_filename;
-    el.docTitleText.title = doc.original_filename;
-    el.docMetaSubtext.textContent = `${doc.page_count} bet • ${formatBytes(doc.file_size)}`;
+    const validRotations = {};
+    if (savedDraft.rotations && typeof savedDraft.rotations === "object") {
+      Object.entries(savedDraft.rotations).forEach(([k, v]) => {
+        const pg = parseInt(k, 10);
+        const deg = parseInt(v, 10);
+        if (pg >= 1 && pg <= pageCount && [90, 180, 270].includes(((deg % 360) + 360) % 360)) {
+          validRotations[String(pg)] = ((deg % 360) + 360) % 360;
+        }
+      });
+    }
+    state.rotations = validRotations;
 
-    el.uploadView.classList.add("hidden");
-    el.studioWorkspace.classList.remove("hidden");
+    const restoredSelected = Array.isArray(savedDraft.selectedPages)
+      ? savedDraft.selectedPages
+          .map((n) => parseInt(n, 10))
+          .filter((n) => Number.isInteger(n) && n >= 1 && n <= pageCount)
+      : allPages;
+    state.selectedPages = new Set(restoredSelected);
 
-    buildPageCards(doc.page_count);
-    syncSelectionUI({ syncTextInput: true });
-    updateColorFilterClass();
-    updateMetricsSummary();
+    const restoredColorPages = Array.isArray(savedDraft.colorPages)
+      ? savedDraft.colorPages
+          .map((n) => parseInt(n, 10))
+          .filter((n) => Number.isInteger(n) && n >= 1 && n <= pageCount)
+      : [];
+    state.colorPages = new Set(restoredColorPages);
+    if (el.colorPagesInput) {
+      el.colorPagesInput.value =
+        typeof savedDraft.colorPagesText === "string"
+          ? savedDraft.colorPagesText
+          : PageSelector.formatRange(restoredColorPages);
+    }
 
-    await PdfRenderer.loadPdf(doc.pdf_url, doc.page_count);
-    await PdfRenderer.renderAllThumbnails(state.pageCanvases, state.rotations);
+    state.copies = Math.max(1, Math.min(99, parseInt(savedDraft.copies, 10) || 1));
+    if (el.copiesValue) el.copiesValue.textContent = String(state.copies);
+
+    const orient = savedDraft.orientation === "landscape" ? "landscape" : "portrait";
+    state.orientation = orient;
+    el.orientPortraitBtn.classList.toggle("is-active", orient === "portrait");
+    el.orientLandscapeBtn.classList.toggle("is-active", orient === "landscape");
+
+    const pps = [1, 2, 4].includes(parseInt(savedDraft.pagesPerSheet, 10))
+      ? parseInt(savedDraft.pagesPerSheet, 10)
+      : 1;
+    state.pagesPerSheet = pps;
+    if (el.pagesPerSheetSelect) el.pagesPerSheetSelect.value = String(pps);
+
+    const paper = ["A4", "A5", "Letter"].includes(savedDraft.paperSize) ? savedDraft.paperSize : "A4";
+    state.paperSize = paper;
+    if (el.paperSizeSelect) el.paperSizeSelect.value = paper;
+
+    if (el.studentNameInput && typeof savedDraft.studentName === "string") {
+      el.studentNameInput.value = savedDraft.studentName;
+    }
+    if (typeof savedDraft.printerName === "string" && savedDraft.printerName) {
+      if (el.printerSelect && Array.from(el.printerSelect.options).some((o) => o.value === savedDraft.printerName)) {
+        el.printerSelect.value = savedDraft.printerName;
+      } else {
+        state.pendingRestoredPrinterName = savedDraft.printerName;
+      }
+    }
+
+    const mode = ["bw", "color", "mixed"].includes(savedDraft.colorMode) ? savedDraft.colorMode : "bw";
+    setColorMode(mode);
+  }
+
+  async function openDocumentInStudio(doc, savedDraft = null) {
+    state.isRestoringSession = true;
+    try {
+      state.currentDoc = doc;
+      applyStudioDraft(doc, savedDraft);
+
+      el.docFileTypeBadge.textContent = (doc.file_type || "PDF").toUpperCase();
+      el.docTitleText.textContent = doc.original_filename;
+      el.docTitleText.title = doc.original_filename;
+      el.docMetaSubtext.textContent = `${doc.page_count} bet • ${formatBytes(doc.file_size)}`;
+
+      el.uploadView.classList.add("hidden");
+      el.studioWorkspace.classList.remove("hidden");
+
+      buildPageCards(doc.page_count);
+      syncSelectionUI({ syncTextInput: true });
+      updateColorFilterClass();
+      updateMetricsSummary();
+
+      await PdfRenderer.loadPdf(doc.pdf_url, doc.page_count);
+      await PdfRenderer.renderAllThumbnails(state.pageCanvases, state.rotations);
+    } finally {
+      state.isRestoringSession = false;
+    }
+    saveStudioDraft();
   }
 
   function buildPageCards(pageCount) {
@@ -484,6 +659,7 @@
   async function rotatePage(pageNum) {
     const key = String(pageNum);
     state.rotations[key] = ((state.rotations[key] || 0) + 90) % 360;
+    saveStudioDraft();
     const canvas = state.pageCanvases.get(pageNum);
     if (canvas) {
       await PdfRenderer.renderPageToCanvas(pageNum, canvas, 340, state.rotations[key], true);
@@ -686,6 +862,7 @@
       const presetVal = parseInt(btn.getAttribute("data-copy-preset"), 10);
       btn.classList.toggle("is-active", presetVal === state.copies);
     });
+    saveStudioDraft();
   }
 
   async function openZoomModal(pageNum) {
@@ -751,7 +928,7 @@
 
       const job = await SmartPrintApi.createPrintJob(payload);
       showJobResultModal(job);
-      loadLiveQueue();
+      await Promise.all([loadLiveQueue(), refreshMyActiveJobs()]);
     } catch (err) {
       showToast(err.message, "error");
     } finally {
@@ -933,9 +1110,18 @@
     `;
   }
 
+  function closeJobModal() {
+    stopCountdownTimer();
+    const closingId = state.activeModalJob && state.activeModalJob.id ? state.activeModalJob.id : "";
+    saveModalState("", closingId);
+    state.activeModalJob = null;
+    el.jobResultModal.classList.add("hidden");
+  }
+
   function showJobResultModal(job) {
     stopCountdownTimer();
     state.activeModalJob = job;
+    saveModalState(job && job.id ? job.id : "", "");
     el.jobResultPdfLink.href = job.pdf_url;
     el.jobResultPdfLink.classList.toggle("hidden", job.queue_state === "AWAITING_PAYMENT");
 
@@ -1095,11 +1281,16 @@
   async function cancelJobAction(jobId) {
     try {
       const updated = await SmartPrintApi.cancelPrintJob(jobId);
+      saveModalState("", jobId);
       if (state.activeModalJob && state.activeModalJob.id === jobId) {
         state.activeModalJob = updated;
+        if (el.jobResultModal && !el.jobResultModal.classList.contains("hidden")) {
+          showJobResultModal(updated);
+          saveModalState("", jobId);
+        }
       }
       showToast("Buyurtma navbatdan bekor qilindi.", "info");
-      await loadLiveQueue();
+      await Promise.all([loadLiveQueue(), refreshMyActiveJobs()]);
     } catch (err) {
       showToast(err.message, "error");
     }
@@ -1107,6 +1298,21 @@
 
   function attachQueueActionHandlers(root) {
     if (!root) return;
+    root.querySelectorAll("[data-open-job-modal-id]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const jobId = btn.dataset.openJobModalId;
+        if (!jobId) return;
+        btn.disabled = true;
+        try {
+          const fresh = await SmartPrintApi.getPrintJob(jobId);
+          showJobResultModal(fresh);
+        } catch (err) {
+          showToast(err.message, "error");
+        } finally {
+          btn.disabled = false;
+        }
+      });
+    });
     root.querySelectorAll("[data-confirm-job-id]").forEach((btn) => {
       btn.addEventListener("click", () => confirmJobPrintedAction(btn.dataset.confirmJobId));
     });
@@ -1155,7 +1361,7 @@
           const updatedJob = await SmartPrintApi.verifyJobPayment(jobId, file);
           state.activeModalJob = updatedJob;
           showJobResultModal(updatedJob);
-          await loadLiveQueue();
+          await Promise.all([loadLiveQueue(), refreshMyActiveJobs()]);
           showToast(updatedJob.payment_note || "To'lov tasdiqlandi! Chop etish boshlandi.", "success");
         } catch (err) {
           if (errBox) {
@@ -1177,6 +1383,7 @@
           const updatedJob = await SmartPrintApi.renewJobPayment(jobId);
           state.activeModalJob = updatedJob;
           showJobResultModal(updatedJob);
+          await refreshMyActiveJobs();
           showToast("120 soniyalik to'lov taymeri yangilandi!", "info");
         } catch (err) {
           showToast(err.message, "error");
@@ -1369,13 +1576,67 @@
 
     const showColumns = q.waiting_count > 0 || state.showQueueDetails;
     el.liveQueueColumns.classList.toggle("hidden", !showColumns);
+    renderMyPendingPaymentBanner();
     syncOpenJobModalWithLiveQueue();
+  }
+
+  function renderMyPendingPaymentBanner() {
+    if (!el.myPendingPaymentBanner) return;
+    const pendingList = (state.myActiveJobs || []).filter(
+      (j) => j && j.queue_state === "AWAITING_PAYMENT"
+    );
+    if (!pendingList.length) {
+      el.myPendingPaymentBanner.classList.add("hidden");
+      el.myPendingPaymentBanner.innerHTML = "";
+      return;
+    }
+    const job = pendingList[0];
+    const remSec = job.payment_deadline_ts
+      ? Math.max(0, Math.ceil(job.payment_deadline_ts - Date.now() / 1000))
+      : Math.max(0, parseInt(job.payment_remaining_seconds, 10) || 0);
+    const mins = String(Math.floor(remSec / 60)).padStart(2, "0");
+    const secs = String(remSec % 60).padStart(2, "0");
+    const timeLabel = remSec > 0 ? `${mins}:${secs} qoldi` : "Vaqt tugadi (yangilash mumkin)";
+
+    el.myPendingPaymentBanner.innerHTML = `
+      <div class="live-pending-payment-text">
+        <strong>Tugallanmagan to'lov: ${escapeHtml(job.original_filename)} (${formatMoney(job.estimated_cost)})</strong>
+        <span>Holati: ${escapeHtml(timeLabel)} — chek yuklab tasdiqlashingiz mumkin</span>
+      </div>
+      <div class="live-confirm-actions">
+        <button type="button" class="btn btn-primary btn-sm" data-open-job-modal-id="${escapeHtml(job.id)}">
+          To'lov oynasini ochish
+        </button>
+        <button type="button" class="btn btn-ghost btn-sm" data-cancel-job-id="${escapeHtml(job.id)}">
+          Bekor qilish
+        </button>
+      </div>
+    `;
+    el.myPendingPaymentBanner.classList.remove("hidden");
+    attachQueueActionHandlers(el.myPendingPaymentBanner);
+  }
+
+  async function refreshMyActiveJobs() {
+    try {
+      const jobs = await SmartPrintApi.getMyActiveJobs();
+      state.myActiveJobs = Array.isArray(jobs) ? jobs : [];
+      renderMyPendingPaymentBanner();
+      return state.myActiveJobs;
+    } catch (_) {
+      return state.myActiveJobs || [];
+    }
   }
 
   async function loadLiveQueue() {
     if (state.isPollingQueue) return;
     state.isPollingQueue = true;
     try {
+      const hasPendingPayment = (state.myActiveJobs || []).some(
+        (j) => j && j.queue_state === "AWAITING_PAYMENT"
+      );
+      if (hasPendingPayment) {
+        await refreshMyActiveJobs();
+      }
       state.liveQueue = await SmartPrintApi.getLiveQueue();
       renderLiveQueue();
     } catch (_) {
@@ -1723,7 +1984,18 @@
               res.scan.summary || null
             );
           }
-          await Promise.all([loadSystemStatus(), loadAdminDashboard()]);
+          if (res.ok && res.pending) {
+            btn.textContent = "Pi ulamoqda...";
+            if (state.pendingScanRefreshTimer) {
+              clearTimeout(state.pendingScanRefreshTimer);
+            }
+            state.pendingScanRefreshTimer = setTimeout(() => {
+              state.pendingScanRefreshTimer = null;
+              handleScanPrinters();
+            }, 3000);
+          } else {
+            await Promise.all([loadSystemStatus(), loadAdminDashboard()]);
+          }
         } catch (err) {
           showToast(err.message, "error");
           btn.disabled = false;
@@ -2256,6 +2528,8 @@
     });
 
     el.changeDocumentBtn.addEventListener("click", () => {
+      state.currentDoc = null;
+      clearStudioDraft();
       el.studioWorkspace.classList.add("hidden");
       el.uploadView.classList.remove("hidden");
     });
@@ -2384,11 +2658,13 @@
       state.orientation = "portrait";
       el.orientPortraitBtn.classList.add("is-active");
       el.orientLandscapeBtn.classList.remove("is-active");
+      saveStudioDraft();
     });
     el.orientLandscapeBtn.addEventListener("click", () => {
       state.orientation = "landscape";
       el.orientLandscapeBtn.classList.add("is-active");
       el.orientPortraitBtn.classList.remove("is-active");
+      saveStudioDraft();
     });
 
     el.pagesPerSheetSelect.addEventListener("change", () => {
@@ -2398,7 +2674,15 @@
 
     el.paperSizeSelect.addEventListener("change", () => {
       state.paperSize = el.paperSizeSelect.value;
+      saveStudioDraft();
     });
+
+    if (el.studentNameInput) {
+      el.studentNameInput.addEventListener("input", saveStudioDraft);
+    }
+    if (el.printerSelect) {
+      el.printerSelect.addEventListener("change", saveStudioDraft);
+    }
 
     // Submit Print
     el.printSubmitBtn.addEventListener("click", submitPrintJob);
@@ -2409,13 +2693,7 @@
     // Admin side navigation (one section visible at a time)
     document.querySelectorAll(".admin-nav-btn[data-admin-tab]").forEach((tabBtn) => {
       tabBtn.addEventListener("click", () => {
-        const target = tabBtn.getAttribute("data-admin-tab");
-        document.querySelectorAll(".admin-nav-btn[data-admin-tab]").forEach((b) => {
-          b.classList.toggle("is-active", b === tabBtn);
-        });
-        document.querySelectorAll("#adminView [data-admin-panel]").forEach((panel) => {
-          panel.classList.toggle("hidden", panel.getAttribute("data-admin-panel") !== target);
-        });
+        setActiveAdminTab(tabBtn.getAttribute("data-admin-tab"));
       });
     });
 
@@ -2447,6 +2725,7 @@
       if (e.key === "Escape") {
         if (!el.zoomModal.classList.contains("hidden")) closeZoomModal();
         if (!el.adminLoginModal.classList.contains("hidden")) closeAdminLoginModal();
+        if (!el.jobResultModal.classList.contains("hidden")) closeJobModal();
       } else if (!el.zoomModal.classList.contains("hidden")) {
         if (e.key === "ArrowLeft" && state.zoomPage > 1) {
           state.zoomPage -= 1;
@@ -2471,19 +2750,67 @@
     }
 
     // Job Result Modal
-    const closeJobModal = () => {
-      stopCountdownTimer();
-      state.activeModalJob = null;
-      el.jobResultModal.classList.add("hidden");
-    };
     el.jobModalCloseBtn.addEventListener("click", closeJobModal);
     el.jobDoneBtn.addEventListener("click", closeJobModal);
   }
 
+  async function restoreSessionOnLoad() {
+    const savedAdminTab = sessionStorage.getItem(ADMIN_TAB_KEY);
+    if (savedAdminTab) {
+      setActiveAdminTab(savedAdminTab);
+    }
+
+    const wasAdminView = sessionStorage.getItem(ADMIN_VIEW_KEY) === "admin";
+    if (wasAdminView && SmartPrintApi.getAdminToken()) {
+      await openAdminSection();
+    }
+
+    const savedDraft = readJsonStorage(localStorage, STUDIO_DRAFT_KEY, null);
+    if (savedDraft && savedDraft.docId) {
+      try {
+        const doc = await SmartPrintApi.getDocument(savedDraft.docId);
+        await openDocumentInStudio(doc, savedDraft);
+      } catch (_) {
+        clearStudioDraft();
+      }
+    }
+
+    const modalState = readJsonStorage(localStorage, MODAL_STATE_KEY, {});
+    const myJobs = await refreshMyActiveJobs();
+    const openJobId = (modalState && modalState.openJobId) || "";
+    const dismissedJobId = (modalState && modalState.dismissedJobId) || "";
+
+    let jobToReopen = null;
+    const awaiting = myJobs.find((j) => j.queue_state === "AWAITING_PAYMENT");
+    if (awaiting && awaiting.id !== dismissedJobId) {
+      jobToReopen = awaiting;
+    } else if (openJobId && openJobId !== dismissedJobId) {
+      jobToReopen = myJobs.find((j) => j.id === openJobId) || null;
+      if (!jobToReopen) {
+        try {
+          const fetched = await SmartPrintApi.getPrintJob(openJobId);
+          if (fetched && fetched.queue_state !== "CANCELLED") {
+            jobToReopen = fetched;
+          }
+        } catch (_) {
+          saveModalState("", "");
+        }
+      }
+    }
+    if (jobToReopen) {
+      showJobResultModal(jobToReopen);
+    }
+  }
+
   async function init() {
     bindEvents();
-    setActiveView("student");
+    const initialView =
+      sessionStorage.getItem(ADMIN_VIEW_KEY) === "admin" && SmartPrintApi.getAdminToken()
+        ? "admin"
+        : "student";
+    setActiveView(initialView);
     await Promise.all([loadSystemStatus(), loadLiveQueue()]);
+    await restoreSessionOnLoad();
     if (state.queuePollTimer) {
       clearInterval(state.queuePollTimer);
     }

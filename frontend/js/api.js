@@ -120,6 +120,25 @@ window.SmartPrintApi = (() => {
     return handleResponse(res);
   }
 
+  async function getDocument(docId) {
+    const res = await fetch(`/api/documents/${encodeURIComponent(docId)}`);
+    return handleResponse(res);
+  }
+
+  async function getMyActiveJobs() {
+    const res = await fetch("/api/client/active-jobs", {
+      headers: { "X-Client-Token": getClientToken() },
+    });
+    return handleResponse(res);
+  }
+
+  async function getPrintJob(jobId) {
+    const res = await fetch(`/api/print-jobs/${encodeURIComponent(jobId)}`, {
+      headers: { "X-Client-Token": getClientToken() },
+    });
+    return handleResponse(res);
+  }
+
   async function confirmJobPrinted(jobId) {
     const tok = getClientToken();
     const res = await fetch(`/api/print-jobs/${encodeURIComponent(jobId)}/confirm`, {
@@ -343,8 +362,11 @@ window.SmartPrintApi = (() => {
     getSystemStatus,
     uploadDocument,
     loadSampleDocument,
+    getDocument,
     createPrintJob,
     getLiveQueue,
+    getMyActiveJobs,
+    getPrintJob,
     confirmJobPrinted,
     extendJobTime,
     cancelPrintJob,

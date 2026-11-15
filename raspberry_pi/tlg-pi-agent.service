@@ -10,7 +10,7 @@ WorkingDirectory=/home/pi/TLG_PRINTER
 Environment=TLG_SERVER_URL=https://YOUR-DOMAIN.example
 Environment=TLG_AGENT_KEY=CHANGE_ME_STRONG_AGENT_KEY
 Environment=TLG_PRINTER_NAME=
-Environment=TLG_POLL_INTERVAL=3
+Environment=TLG_POLL_INTERVAL=2
 ExecStart=/usr/bin/python3 /home/pi/TLG_PRINTER/raspberry_pi/pi_print_agent.py
 Restart=always
 RestartSec=3
