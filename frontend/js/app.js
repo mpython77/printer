@@ -26,6 +26,7 @@
     showQueueDetails: false,
     queuePollTimer: null,
     isPollingQueue: false,
+    telegramPendingAuthToken: "",
   };
 
   // DOM References
@@ -138,6 +139,26 @@
     currentAdminPassword: document.getElementById("currentAdminPassword"),
     newAdminPassword: document.getElementById("newAdminPassword"),
     saveCredentialsBtn: document.getElementById("saveCredentialsBtn"),
+
+    // Payment & Telegram Controls
+    paymentEnabledInput: document.getElementById("paymentEnabledInput"),
+    paymentCardNumberInput: document.getElementById("paymentCardNumberInput"),
+    paymentCardHolderInput: document.getElementById("paymentCardHolderInput"),
+    telegramBotUsernameInput: document.getElementById("telegramBotUsernameInput"),
+    paymentWindowSecondsInput: document.getElementById("paymentWindowSecondsInput"),
+    savePaymentSettingsBtn: document.getElementById("savePaymentSettingsBtn"),
+    adminTelegramStatusBadge: document.getElementById("adminTelegramStatusBadge"),
+    adminTelegramAccountDetails: document.getElementById("adminTelegramAccountDetails"),
+    telegramPhoneInput: document.getElementById("telegramPhoneInput"),
+    telegramSendCodeBtn: document.getElementById("telegramSendCodeBtn"),
+    telegramCodeGroup: document.getElementById("telegramCodeGroup"),
+    telegramCodeInput: document.getElementById("telegramCodeInput"),
+    telegramPasswordInput: document.getElementById("telegramPasswordInput"),
+    telegramVerifyCodeBtn: document.getElementById("telegramVerifyCodeBtn"),
+    telegramDisconnectBtn: document.getElementById("telegramDisconnectBtn"),
+    telegramAuthMessage: document.getElementById("telegramAuthMessage"),
+    refreshHumoPaymentsBtn: document.getElementById("refreshHumoPaymentsBtn"),
+    adminHumoPaymentsList: document.getElementById("adminHumoPaymentsList"),
 
     adminJobSearchInput: document.getElementById("adminJobSearchInput"),
     adminJobStatusFilter: document.getElementById("adminJobStatusFilter"),
@@ -772,6 +793,83 @@
       `;
     }
 
+    if (qState === "AWAITING_PAYMENT") {
+      const payCfg = (state.systemStatus && state.systemStatus.payment) || {};
+      const windowSec = Math.max(30, parseInt(payCfg.window_seconds, 10) || 120);
+      const remSec = job.payment_deadline_ts
+        ? Math.max(0, Math.ceil(job.payment_deadline_ts - Date.now() / 1000))
+        : Math.max(0, parseInt(job.payment_remaining_seconds, 10) || 0);
+      const pct = Math.max(0, Math.min(100, Math.round((remSec / windowSec) * 100)));
+      const cardNum = payCfg.card_number || "Karta raqami kiritilmagan (Admin panelda sozlang)";
+      const cardHolder = payCfg.card_holder || "";
+      const exactAmount = String(Number(job.estimated_cost || 0));
+      const mins = String(Math.floor(remSec / 60)).padStart(2, "0");
+      const secs = String(remSec % 60).padStart(2, "0");
+      const hasErr = job.payment_status === "UNVERIFIED" || job.payment_status === "EXPIRED";
+
+      return `
+        <div class="modal-live-banner is-payment">
+          <div class="countdown-head">
+            <span>⏳ To'lov uchun ajratilgan vaqt</span>
+            <strong id="jobPaymentCountdownText">${remSec > 0 ? `${mins}:${secs} qoldi` : "Vaqt tugadi!"}</strong>
+          </div>
+          <div class="countdown-bar-track">
+            <div class="countdown-bar-fill is-payment-fill" id="jobPaymentCountdownFill" style="width: ${pct}%"></div>
+          </div>
+
+          <div class="payment-card-visual">
+            <div class="payment-card-row">
+              <div>
+                <span class="pay-label">HUMO karta raqami</span>
+                <strong class="pay-value pay-card-num">${escapeHtml(cardNum)}</strong>
+                ${cardHolder ? `<span class="pay-holder">${escapeHtml(cardHolder)}</span>` : ""}
+              </div>
+              <button type="button" class="btn btn-secondary btn-xs" data-copy-text="${escapeHtml(cardNum.replace(/\s+/g, ""))}">
+                Kartani nusxalash
+              </button>
+            </div>
+            <div class="payment-card-row payment-amount-row">
+              <div>
+                <span class="pay-label">Aniq o'tkaziladigan summa</span>
+                <strong class="pay-value pay-amount">${formatMoney(job.estimated_cost)}</strong>
+              </div>
+              <button type="button" class="btn btn-secondary btn-xs" data-copy-text="${escapeHtml(exactAmount)}">
+                Summani nusxalash
+              </button>
+            </div>
+          </div>
+
+          <div class="receipt-upload-zone">
+            <label class="form-label" for="jobReceiptFileInput">
+              To'lov cheki (Click / Payme / Uzum skrinshot yoki PDF — rasmiy isbot sifatida saqlanadi)
+            </label>
+            <input id="jobReceiptFileInput" type="file" accept=".jpg,.jpeg,.png,.webp,.pdf,image/*,application/pdf" class="receipt-file-input" />
+            ${
+              job.has_receipt
+                ? `<div class="receipt-saved-badge">Yuklangan chek: <strong>${escapeHtml(job.receipt_filename || "chek")}</strong></div>`
+                : ""
+            }
+          </div>
+
+          <div id="jobPaymentErrorBox" class="pay-error-box ${hasErr && job.payment_note ? "" : "hidden"}">
+            ${hasErr && job.payment_note ? escapeHtml(job.payment_note) : ""}
+          </div>
+
+          <div class="live-confirm-actions">
+            <button type="button" id="verifyPaymentSubmitBtn" class="btn btn-print btn-sm" data-verify-payment-job-id="${escapeHtml(job.id)}">
+              💳 To'lov qildim va chekni tasdiqlash
+            </button>
+            <button type="button" id="renewPaymentTimerBtn" class="btn btn-secondary btn-sm" data-renew-payment-job-id="${escapeHtml(job.id)}">
+              🔄 120s vaqtni yangilash
+            </button>
+            <button type="button" class="btn btn-danger-outline btn-sm" data-cancel-job-id="${escapeHtml(job.id)}">
+              Bekor qilish
+            </button>
+          </div>
+        </div>
+      `;
+    }
+
     return `
       <div class="modal-live-banner is-printing">
         <div class="countdown-head">
@@ -797,6 +895,7 @@
     stopCountdownTimer();
     state.activeModalJob = job;
     el.jobResultPdfLink.href = job.pdf_url;
+    el.jobResultPdfLink.classList.toggle("hidden", job.queue_state === "AWAITING_PAYMENT");
 
     const totalSec = Math.max(0, parseInt(job.estimated_seconds, 10) || 0);
     const colorLabel = formatColorLabel(job);
@@ -863,10 +962,45 @@
     `;
     attachQueueActionHandlers(el.jobResultBody);
     el.jobResultModal.classList.remove("hidden");
+    if (job.queue_state === "AWAITING_PAYMENT") {
+      startPaymentCountdown(job);
+    }
+  }
+
+  function startPaymentCountdown(job) {
+    stopCountdownTimer();
+    const payCfg = (state.systemStatus && state.systemStatus.payment) || {};
+    const windowSec = Math.max(30, parseInt(payCfg.window_seconds, 10) || 120);
+
+    const tick = () => {
+      if (!state.activeModalJob || state.activeModalJob.id !== job.id || state.activeModalJob.queue_state !== "AWAITING_PAYMENT") {
+        stopCountdownTimer();
+        return;
+      }
+      const remSec = job.payment_deadline_ts
+        ? Math.max(0, Math.ceil(job.payment_deadline_ts - Date.now() / 1000))
+        : 0;
+      const textEl = document.getElementById("jobPaymentCountdownText");
+      const fillEl = document.getElementById("jobPaymentCountdownFill");
+      if (textEl) {
+        const mins = String(Math.floor(remSec / 60)).padStart(2, "0");
+        const secs = String(remSec % 60).padStart(2, "0");
+        textEl.textContent = remSec > 0 ? `${mins}:${secs} qoldi` : "Vaqt tugadi!";
+      }
+      if (fillEl) {
+        const pct = Math.max(0, Math.min(100, Math.round((remSec / windowSec) * 100)));
+        fillEl.style.width = `${pct}%`;
+      }
+    };
+    tick();
+    state.countdownTimer = setInterval(tick, 1000);
   }
 
   function syncOpenJobModalWithLiveQueue() {
     if (!state.activeModalJob || el.jobResultModal.classList.contains("hidden") || !state.liveQueue) {
+      return;
+    }
+    if (state.activeModalJob.queue_state === "AWAITING_PAYMENT") {
       return;
     }
     const targetId = state.activeModalJob.id;
@@ -939,6 +1073,75 @@
     });
     root.querySelectorAll("[data-cancel-job-id]").forEach((btn) => {
       btn.addEventListener("click", () => cancelJobAction(btn.dataset.cancelJobId));
+    });
+    root.querySelectorAll("[data-copy-text]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const val = btn.dataset.copyText || "";
+        try {
+          await navigator.clipboard.writeText(val);
+        } catch (_) {
+          const inp = document.createElement("textarea");
+          inp.value = val;
+          document.body.appendChild(inp);
+          inp.select();
+          document.execCommand("copy");
+          inp.remove();
+        }
+        showToast(`Nusxalandi: ${val}`, "success");
+      });
+    });
+    root.querySelectorAll("[data-verify-payment-job-id]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const jobId = btn.dataset.verifyPaymentJobId;
+        const fileInput = document.getElementById("jobReceiptFileInput");
+        const errBox = document.getElementById("jobPaymentErrorBox");
+        const file = fileInput && fileInput.files && fileInput.files[0];
+        if (!file) {
+          if (errBox) {
+            errBox.textContent = "Iltimos, avval to'lov chekini (rasm yoki PDF) yuklang!";
+            errBox.classList.remove("hidden");
+          }
+          showToast("Avval to'lov chekini yuklang!", "error");
+          if (fileInput) fileInput.focus();
+          return;
+        }
+        btn.disabled = true;
+        const origLabel = btn.textContent;
+        btn.textContent = "🤖 @HUMOcardbot tekshirilmoqda...";
+        if (errBox) errBox.classList.add("hidden");
+        try {
+          const updatedJob = await SmartPrintApi.verifyJobPayment(jobId, file);
+          state.activeModalJob = updatedJob;
+          showJobResultModal(updatedJob);
+          await loadLiveQueue();
+          showToast(updatedJob.payment_note || "To'lov tasdiqlandi! Chop etish boshlandi.", "success");
+        } catch (err) {
+          if (errBox) {
+            errBox.textContent = err.message;
+            errBox.classList.remove("hidden");
+          }
+          showToast(err.message, "error");
+        } finally {
+          btn.disabled = false;
+          btn.textContent = origLabel;
+        }
+      });
+    });
+    root.querySelectorAll("[data-renew-payment-job-id]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const jobId = btn.dataset.renewPaymentJobId;
+        btn.disabled = true;
+        try {
+          const updatedJob = await SmartPrintApi.renewJobPayment(jobId);
+          state.activeModalJob = updatedJob;
+          showJobResultModal(updatedJob);
+          showToast("120 soniyalik to'lov taymeri yangilandi!", "info");
+        } catch (err) {
+          showToast(err.message, "error");
+        } finally {
+          btn.disabled = false;
+        }
+      });
     });
   }
 
@@ -1238,6 +1441,29 @@
       el.adminAgentKeyInput.value = data.settings.agent_api_key || "";
     }
 
+    if (el.paymentEnabledInput) {
+      el.paymentEnabledInput.checked = Boolean(data.settings.payment_enabled);
+    }
+    if (el.paymentCardNumberInput) {
+      el.paymentCardNumberInput.value = data.settings.payment_card_number || "";
+    }
+    if (el.paymentCardHolderInput) {
+      el.paymentCardHolderInput.value = data.settings.payment_card_holder || "";
+    }
+    if (el.telegramBotUsernameInput) {
+      el.telegramBotUsernameInput.value = data.settings.telegram_bot_username || "@HUMOcardbot";
+    }
+    if (el.paymentWindowSecondsInput) {
+      el.paymentWindowSecondsInput.value = data.settings.payment_window_seconds ?? 120;
+    }
+
+    renderAdminTelegramStatus(data.telegram || {});
+    if (data.telegram && data.telegram.connected) {
+      loadRecentHumoPayments({ silent: true });
+    } else if (el.adminHumoPaymentsList) {
+      el.adminHumoPaymentsList.innerHTML = `<div class="humo-feed-empty">Telegram hisob ulanganidan keyin oxirgi tushumlar ko'rinadi.</div>`;
+    }
+
     if (el.piAgentStatusBox) {
       if (data.settings.agent_last_seen) {
         el.piAgentStatusBox.innerHTML = `
@@ -1272,6 +1498,8 @@
 
   function getStatusBadgeInfo(status) {
     switch (status) {
+      case "AWAITING_PAYMENT":
+        return { label: "To'lov kutilmoqda", cls: "status-tag--warn" };
       case "COMPLETED":
         return { label: "Chop etilgan", cls: "status-tag--ok" };
       case "SENT_TO_PRINTER":
@@ -1320,6 +1548,16 @@
             : job.color_mode === "color"
               ? "Rangli"
               : "Oq-qora";
+        const payTag =
+          job.payment_status === "PAID"
+            ? `<span class="tag-pill pay-pill is-paid">💳 To'langan (${escapeHtml(job.payment_tx_id || "tasdiq")})</span>`
+            : job.payment_status === "UNVERIFIED"
+              ? `<span class="tag-pill pay-pill is-unverified">⚠️ To'lov topilmadi</span>`
+              : job.payment_status === "AWAITING_PAYMENT"
+                ? `<span class="tag-pill pay-pill is-pending">⏳ To'lov kutilmoqda</span>`
+                : job.payment_status === "EXPIRED"
+                  ? `<span class="tag-pill pay-pill is-unverified">⌛ Vaqt tugagan</span>`
+                  : "";
         return `
         <div class="queue-item">
           <div class="queue-item-main">
@@ -1334,10 +1572,22 @@
               <span class="tag-pill">${job.physical_sheets} varaq</span>
               <span class="tag-pill">Vaqt: ${escapeHtml(formatDuration(job.estimated_seconds))}</span>
               <span class="tag-pill">${formatMoney(job.estimated_cost)}</span>
+              ${payTag}
             </div>
+            ${job.payment_note ? `<div class="payment-note-line">${escapeHtml(job.payment_note)}</div>` : ""}
           </div>
           <div class="queue-item-actions">
             <span class="status-tag ${badge.cls}">${badge.label}</span>
+            ${
+              job.has_receipt
+                ? `<a href="${escapeHtml(SmartPrintApi.getReceiptUrl(job.id))}" target="_blank" rel="noopener" class="btn btn-secondary btn-sm">🧾 To'lov cheki</a>`
+                : ""
+            }
+            ${
+              job.queue_state === "AWAITING_PAYMENT"
+                ? `<button type="button" class="btn btn-success btn-sm admin-approve-payment-btn" data-job-id="${escapeHtml(job.id)}">💳 To'lovni tasdiqlash</button>`
+                : ""
+            }
             <a href="${job.pdf_url}" target="_blank" rel="noopener" class="btn btn-primary btn-sm">Tayyor PDF</a>
             <a href="${job.original_pdf_url}" target="_blank" rel="noopener" class="btn btn-secondary btn-sm">Asl PDF</a>
             ${
@@ -1351,6 +1601,21 @@
       `;
       })
       .join("");
+
+    el.adminJobsList.querySelectorAll(".admin-approve-payment-btn").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        btn.disabled = true;
+        try {
+          await SmartPrintApi.updateAdminJobStatus(btn.dataset.jobId, "APPROVE_PAYMENT");
+          showToast("To'lov admin tomonidan tasdiqlandi va chop etishga uzatildi!", "success");
+          await Promise.all([loadAdminDashboard(), loadLiveQueue()]);
+        } catch (err) {
+          showToast(err.message, "error");
+        } finally {
+          btn.disabled = false;
+        }
+      });
+    });
 
     el.adminJobsList.querySelectorAll(".admin-complete-btn").forEach((btn) => {
       btn.addEventListener("click", async () => {
@@ -1377,6 +1642,144 @@
     });
   }
 
+  function renderAdminTelegramStatus(tg) {
+    if (!el.adminTelegramStatusBadge) return;
+    const connected = Boolean(tg && tg.connected);
+    el.adminTelegramStatusBadge.className = `status-pill ${connected ? "status-pill--live" : "status-pill--dryrun"}`;
+    el.adminTelegramStatusBadge.textContent = connected
+      ? `Telegram ulangan: ${tg.account_name || tg.account_phone || "Faol"}`
+      : "Telegram ulanmagan";
+    if (el.adminTelegramAccountDetails) {
+      if (connected) {
+        const handle = tg.account_username ? `@${tg.account_username}` : "";
+        el.adminTelegramAccountDetails.innerHTML = `<strong>${escapeHtml(tg.account_name || "Telegram")}</strong> ${escapeHtml(handle)} (${escapeHtml(tg.account_phone || "")}) • Bot: <code>${escapeHtml(tg.bot_username || "@HUMOcardbot")}</code>`;
+      } else {
+        el.adminTelegramAccountDetails.textContent =
+          "Telegram akkaunt ulansa, sayt botdagi tushumlarni real vaqtda avtomatik o'qiydi.";
+      }
+    }
+    if (el.telegramDisconnectBtn) {
+      el.telegramDisconnectBtn.classList.toggle("hidden", !connected);
+    }
+  }
+
+  function showTelegramAuthMsg(msg, isError = false) {
+    if (!el.telegramAuthMessage) return;
+    if (!msg) {
+      el.telegramAuthMessage.classList.add("hidden");
+      el.telegramAuthMessage.textContent = "";
+      return;
+    }
+    el.telegramAuthMessage.textContent = msg;
+    el.telegramAuthMessage.className = `tg-auth-msg ${isError ? "is-error" : "is-success"}`;
+  }
+
+  async function handleTelegramSendCode() {
+    const phone = el.telegramPhoneInput ? el.telegramPhoneInput.value.trim() : "";
+    const bot = el.telegramBotUsernameInput ? el.telegramBotUsernameInput.value.trim() : "@HUMOcardbot";
+    if (!phone) {
+      showTelegramAuthMsg("Telefon raqamini kiriting (+998...).", true);
+      return;
+    }
+    el.telegramSendCodeBtn.disabled = true;
+    el.telegramSendCodeBtn.textContent = "Yuborilmoqda...";
+    showTelegramAuthMsg("");
+    try {
+      const res = await SmartPrintApi.sendTelegramCode(phone, bot || "@HUMOcardbot");
+      state.telegramPendingAuthToken = res.auth_token;
+      if (el.telegramCodeGroup) el.telegramCodeGroup.classList.remove("hidden");
+      showTelegramAuthMsg(res.message || "Tasdiqlash kodi yuborildi!", false);
+      showToast(res.message || "Telegram kod yuborildi!", "success");
+    } catch (err) {
+      showTelegramAuthMsg(err.message, true);
+      showToast(err.message, "error");
+    } finally {
+      el.telegramSendCodeBtn.disabled = false;
+      el.telegramSendCodeBtn.textContent = "Kod yuborish";
+    }
+  }
+
+  async function handleTelegramVerifyCode() {
+    if (!state.telegramPendingAuthToken) {
+      showTelegramAuthMsg("Avval 'Kod yuborish' tugmasini bosing.", true);
+      return;
+    }
+    const code = el.telegramCodeInput ? el.telegramCodeInput.value.trim() : "";
+    const password = el.telegramPasswordInput ? el.telegramPasswordInput.value : "";
+    el.telegramVerifyCodeBtn.disabled = true;
+    el.telegramVerifyCodeBtn.textContent = "Tekshirilmoqda...";
+    try {
+      const res = await SmartPrintApi.verifyTelegramCode(state.telegramPendingAuthToken, code, password);
+      if (res.needs_password) {
+        showTelegramAuthMsg(res.message, false);
+        showToast(res.message, "info");
+        if (el.telegramPasswordInput) el.telegramPasswordInput.focus();
+        return;
+      }
+      state.telegramPendingAuthToken = "";
+      if (el.telegramCodeGroup) el.telegramCodeGroup.classList.add("hidden");
+      if (el.telegramCodeInput) el.telegramCodeInput.value = "";
+      if (el.telegramPasswordInput) el.telegramPasswordInput.value = "";
+      showTelegramAuthMsg(res.message || "Telegram sessiyasi saqlandi!", false);
+      showToast(res.message || "Telegram ulandi!", "success");
+      await Promise.all([loadSystemStatus(), loadAdminDashboard()]);
+    } catch (err) {
+      showTelegramAuthMsg(err.message, true);
+      showToast(err.message, "error");
+    } finally {
+      el.telegramVerifyCodeBtn.disabled = false;
+      el.telegramVerifyCodeBtn.textContent = "Tasdiqlash va sessiyani saqlash";
+    }
+  }
+
+  async function handleTelegramDisconnect() {
+    try {
+      await SmartPrintApi.disconnectTelegram();
+      showTelegramAuthMsg("Telegram hisob uzildi.", false);
+      showToast("Telegram hisobi uzildi.", "info");
+      await Promise.all([loadSystemStatus(), loadAdminDashboard()]);
+    } catch (err) {
+      showToast(err.message, "error");
+    }
+  }
+
+  async function loadRecentHumoPayments({ silent = false } = {}) {
+    if (!el.adminHumoPaymentsList) return;
+    if (!silent) {
+      el.adminHumoPaymentsList.innerHTML = `<div class="humo-feed-empty">Botdan oxirgi tushumlar yuklanmoqda...</div>`;
+    }
+    try {
+      const data = await SmartPrintApi.getRecentHumoPayments();
+      if (!data.connected) {
+        el.adminHumoPaymentsList.innerHTML = `<div class="humo-feed-empty">${escapeHtml(data.error || "Telegram ulanmagan.")}</div>`;
+        return;
+      }
+      const items = data.transactions || [];
+      if (!items.length) {
+        el.adminHumoPaymentsList.innerHTML = `<div class="humo-feed-empty">${escapeHtml(data.bot_username || "@HUMOcardbot")} da tushum xabarlari topilmadi.</div>`;
+        return;
+      }
+      el.adminHumoPaymentsList.innerHTML = items
+        .slice(0, 12)
+        .map(
+          (tx) => `
+          <div class="humo-feed-item">
+            <div>
+              <strong>➕ ${formatMoney(tx.amount_uzs)}</strong>
+              <span class="humo-feed-meta">${escapeHtml(tx.card_mask || "HUMO")} • ${escapeHtml(tx.humo_time || formatDateTime(tx.msg_date_iso))} • ${escapeHtml(tx.source || "")}</span>
+            </div>
+            <span class="status-tag ${tx.used ? "" : "status-tag--ok"}">${tx.used ? "Ishlatilgan" : "Yangi"}</span>
+          </div>
+        `
+        )
+        .join("");
+    } catch (err) {
+      if (!silent) {
+        el.adminHumoPaymentsList.innerHTML = `<div class="humo-feed-empty">${escapeHtml(err.message)}</div>`;
+      }
+    }
+  }
+
   async function saveAdminSettingsFromUI(successMessage) {
     const bwSimplex = Math.max(0, parseInt(el.priceBwSimplexInput.value, 10) || 0);
     const bwDuplex = Math.max(0, parseInt(el.priceBwDuplexInput.value, 10) || 0);
@@ -1384,6 +1787,7 @@
     const colorDuplex = Math.max(0, parseInt(el.priceColorDuplexInput.value, 10) || 0);
     const secondsBw = Math.max(1, parseInt(el.secondsBwInput ? el.secondsBwInput.value : "7", 10) || 7);
     const secondsColor = Math.max(1, parseInt(el.secondsColorInput ? el.secondsColorInput.value : "14", 10) || 14);
+    const payWindow = Math.max(30, parseInt(el.paymentWindowSecondsInput ? el.paymentWindowSecondsInput.value : "120", 10) || 120);
 
     try {
       await SmartPrintApi.updateAdminSettings({
@@ -1396,6 +1800,11 @@
         printer_mode: el.adminPrinterModeSelect.value,
         default_printer_name: el.adminDefaultPrinterSelect.value,
         agent_api_key: el.adminAgentKeyInput ? el.adminAgentKeyInput.value.trim() : "",
+        payment_enabled: el.paymentEnabledInput ? Boolean(el.paymentEnabledInput.checked) : true,
+        payment_card_number: el.paymentCardNumberInput ? el.paymentCardNumberInput.value.trim() : "",
+        payment_card_holder: el.paymentCardHolderInput ? el.paymentCardHolderInput.value.trim() : "",
+        payment_window_seconds: payWindow,
+        telegram_bot_username: el.telegramBotUsernameInput ? el.telegramBotUsernameInput.value.trim() : "@HUMOcardbot",
       });
       await Promise.all([loadSystemStatus(), loadAdminDashboard()]);
       showToast(successMessage, "success");
@@ -1462,6 +1871,23 @@
     el.savePrinterSettingsBtn.addEventListener("click", () =>
       saveAdminSettingsFromUI("Printer va tizim rejimi saqlandi!")
     );
+    if (el.savePaymentSettingsBtn) {
+      el.savePaymentSettingsBtn.addEventListener("click", () =>
+        saveAdminSettingsFromUI("To'lov kartasi va Telegram bot sozlamalari saqlandi!")
+      );
+    }
+    if (el.telegramSendCodeBtn) {
+      el.telegramSendCodeBtn.addEventListener("click", handleTelegramSendCode);
+    }
+    if (el.telegramVerifyCodeBtn) {
+      el.telegramVerifyCodeBtn.addEventListener("click", handleTelegramVerifyCode);
+    }
+    if (el.telegramDisconnectBtn) {
+      el.telegramDisconnectBtn.addEventListener("click", handleTelegramDisconnect);
+    }
+    if (el.refreshHumoPaymentsBtn) {
+      el.refreshHumoPaymentsBtn.addEventListener("click", () => loadRecentHumoPayments({ silent: false }));
+    }
     el.saveCredentialsBtn.addEventListener("click", handleUpdateCredentials);
     el.adminJobSearchInput.addEventListener("input", renderAdminJobsList);
     el.adminJobStatusFilter.addEventListener("change", renderAdminJobsList);

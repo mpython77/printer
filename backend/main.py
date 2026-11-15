@@ -53,6 +53,19 @@ from backend.database import (
     update_settings,
     verify_admin_credentials,
 )
+import asyncio
+from fastapi import Form
+from fastapi.responses import FileResponse
+import mimetypes
+from backend.humo_verifier import (
+    admin_disconnect_telegram,
+    admin_send_telegram_code,
+    admin_verify_telegram_code,
+    fetch_recent_humo_topups,
+    get_telegram_status,
+    normalize_bot_username,
+    verify_and_claim_humo_payment,
+)
 from backend.models import (
     AdminDashboardResponse,
     AdminLoginRequest,
@@ -67,6 +80,7 @@ from backend.models import (
     JobConfirmRequest,
     JobStatusUpdateRequest,
     LiveQueueStatusResponse,
+    PaymentConfigInfo,
     PricingInfo,
     PrinterInfo,
     PrintJobCreateRequest,
@@ -74,6 +88,9 @@ from backend.models import (
     PrintSegmentInfo,
     QueuePublicJobItem,
     SystemStatusResponse,
+    TelegramSendCodeRequest,
+    TelegramStatusInfo,
+    TelegramVerifyCodeRequest,
 )
 from backend.services.converter import ensure_sample_pdf, normalize_to_pdf
 from backend.services.pdf_processor import (
@@ -138,6 +155,17 @@ def require_admin(authorization: str = Header(default="")) -> str:
         raise HTTPException(status_code=401, detail="Admin huquqi talab qilinadi.")
     token = authorization.removeprefix("Bearer ").strip()
     return _verify_admin_token(token)
+
+
+def require_admin_header_or_query(
+    authorization: str = Header(default=""),
+    token: str = "",
+) -> str:
+    if authorization.startswith("Bearer "):
+        return _verify_admin_token(authorization.removeprefix("Bearer ").strip())
+    if token.strip():
+        return _verify_admin_token(token.strip())
+    raise HTTPException(status_code=401, detail="Admin huquqi talab qilinadi.")
 
 
 def _doc_to_response(doc: dict) -> DocumentResponse:
@@ -265,9 +293,19 @@ def _job_to_response(
         queue_position=enrich["queue_position"],
         remaining_print_seconds=enrich["remaining_print_seconds"],
         confirm_remaining_seconds=enrich["confirm_remaining_seconds"],
+        payment_remaining_seconds=enrich["payment_remaining_seconds"],
         estimated_wait_seconds=enrich["estimated_wait_seconds"],
         started_at=job.get("started_at", ""),
         completed_at=job.get("completed_at", ""),
+        payment_status=job.get("payment_status", "NOT_REQUIRED"),
+        payment_deadline_ts=float(job.get("payment_deadline_ts") or 0.0),
+        payment_tx_id=job.get("payment_tx_id", ""),
+        payment_verified_at=job.get("payment_verified_at", ""),
+        payment_note=job.get("payment_note", ""),
+        has_receipt=bool(job.get("receipt_path")),
+        receipt_filename=job.get("receipt_filename", ""),
+        receipt_uploaded_at=job.get("receipt_uploaded_at", ""),
+        receipt_url=f"/api/admin/print-jobs/{job['id']}/receipt" if job.get("receipt_path") else "",
     )
 
 
@@ -410,6 +448,11 @@ def _settings_to_payload(settings: dict) -> AdminSettingsPayload:
         agent_api_key=settings.get("agent_api_key", ""),
         agent_last_seen=settings.get("agent_last_seen", ""),
         agent_hostname=settings.get("agent_hostname", ""),
+        payment_enabled=bool(settings.get("payment_enabled", True)),
+        payment_card_number=settings.get("payment_card_number", ""),
+        payment_card_holder=settings.get("payment_card_holder", ""),
+        payment_window_seconds=int(settings.get("payment_window_seconds", 120)),
+        telegram_bot_username=settings.get("telegram_bot_username", "@HUMOcardbot"),
     )
 
 
@@ -439,6 +482,7 @@ def system_status() -> SystemStatusResponse:
     printer_mode = settings["printer_mode"]
     hardware_connected = printer_mode in {"LINUX_CUPS", "REMOTE_AGENT", "WINDOWS_SPOOLER"}
     mode_description = _MODE_DESCRIPTIONS.get(printer_mode, _MODE_DESCRIPTIONS["DRY_RUN"])
+    tg_status = get_telegram_status(check_remote=False)
     return SystemStatusResponse(
         printer_mode=printer_mode,
         hardware_connected=hardware_connected,
@@ -453,6 +497,14 @@ def system_status() -> SystemStatusResponse:
             seconds_bw_per_sheet=settings.get("seconds_bw_per_sheet", 7),
             seconds_color_per_sheet=settings.get("seconds_color_per_sheet", 14),
             warmup_seconds=settings.get("warmup_seconds", 5),
+        ),
+        payment=PaymentConfigInfo(
+            enabled=bool(settings.get("payment_enabled", True)),
+            card_number=settings.get("payment_card_number", ""),
+            card_holder=settings.get("payment_card_holder", ""),
+            window_seconds=int(settings.get("payment_window_seconds", 120)),
+            bot_username=normalize_bot_username(settings.get("telegram_bot_username") or "@HUMOcardbot"),
+            telegram_connected=bool(tg_status.get("connected")),
         ),
     )
 
@@ -701,6 +753,30 @@ def submit_print_job(
         job_stub["printer_name"] = target_printer
         job_stub["printer_mode"] = adapter.mode_name
 
+        if bool(live_settings.get("payment_enabled", True)) and int(metrics["estimated_cost"] or 0) > 0:
+            window_seconds = max(30, int(live_settings.get("payment_window_seconds", 120) or 120))
+            job_stub["status"] = "AWAITING_PAYMENT"
+            job_stub["status_message"] = (
+                f"To'lov kutilmoqda: {window_seconds} soniya ichida {metrics['estimated_cost']} UZS o'tkazing va chek yuklang."
+            )
+            job_stub["queue_state"] = "AWAITING_PAYMENT"
+            job_stub["started_at"] = ""
+            job_stub["printing_until_ts"] = 0.0
+            job_stub["confirm_deadline_ts"] = 0.0
+            job_stub["payment_status"] = "AWAITING_PAYMENT"
+            job_stub["payment_created_ts"] = now
+            job_stub["payment_deadline_ts"] = now + window_seconds
+            saved_job = create_print_job(job_stub)
+            return _job_to_response(
+                saved_job,
+                active_job=active_job,
+                waiting_jobs=waiting_jobs,
+                now_ts=now,
+                caller_token=effective_token,
+                include_secret_token=True,
+            )
+
+        job_stub["payment_status"] = "NOT_REQUIRED"
         if active_job is None:
             dispatch_result = adapter.submit_job(job_stub, output_pdf_path)
             duration = max(1, int(metrics["estimated_seconds"] or 5))
@@ -977,9 +1053,223 @@ def get_job_live_status(
         "queue_position": enrich["queue_position"],
         "remaining_print_seconds": enrich["remaining_print_seconds"],
         "confirm_remaining_seconds": enrich["confirm_remaining_seconds"],
+        "payment_remaining_seconds": enrich["payment_remaining_seconds"],
+        "payment_status": job.get("payment_status", "NOT_REQUIRED"),
         "estimated_wait_seconds": enrich["estimated_wait_seconds"],
         "spooler": spooler,
     }
+
+
+_ALLOWED_RECEIPT_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".pdf"}
+_MAX_RECEIPT_BYTES = 10 * 1024 * 1024
+
+
+def _enqueue_or_dispatch_paid_job(job_id: str) -> tuple[dict, dict | None, list[dict]]:
+    now = time.time()
+    active_job, waiting_jobs = _tick_and_advance_queue(now_ts=now)
+    job = get_print_job(job_id)
+    assert job is not None
+    live_settings = get_settings()
+    adapter = get_active_printer_adapter(mode=live_settings["printer_mode"])
+    target_printer = (job.get("printer_name") or "").strip() or live_settings["default_printer_name"]
+    if active_job is None:
+        job_for_dispatch = {
+            **job,
+            "printer_name": target_printer,
+            "printer_mode": adapter.mode_name,
+        }
+        dispatch_result = adapter.submit_job(job_for_dispatch, Path(job["output_pdf_path"]))
+        duration = max(1, int(job.get("estimated_seconds") or 5))
+        updated = update_job_queue_fields(
+            job_id,
+            {
+                "status": dispatch_result["status"],
+                "status_message": dispatch_result["status_message"],
+                "queue_state": "ACTIVE_PRINTING",
+                "started_at": datetime.now(timezone.utc).isoformat(),
+                "printing_until_ts": now + duration,
+                "confirm_deadline_ts": 0.0,
+            },
+        )
+        assert updated is not None
+        active_after, waiting_after = _tick_and_advance_queue(now_ts=now)
+        return updated, active_after, waiting_after
+
+    pos = len(waiting_jobs) + 1
+    updated = update_job_queue_fields(
+        job_id,
+        {
+            "status": "WAITING_IN_QUEUE",
+            "status_message": f"To'lov tasdiqlandi! Printer hozir band — siz navbatda {pos}-o'rindasiz.",
+            "queue_state": "WAITING_IN_QUEUE",
+            "started_at": "",
+            "printing_until_ts": 0.0,
+            "confirm_deadline_ts": 0.0,
+        },
+    )
+    assert updated is not None
+    waiting_after = list_waiting_queue_jobs()
+    return updated, active_job, waiting_after
+
+
+@app.post("/api/print-jobs/{job_id}/verify-payment", response_model=PrintJobResponse)
+async def verify_job_payment(
+    job_id: str,
+    receipt: UploadFile = File(...),
+    client_token: str = Form(default=""),
+    x_client_token: str = Header(default=""),
+) -> PrintJobResponse:
+    caller_token = (x_client_token or client_token or "").strip()
+    job = get_print_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Buyurtma topilmadi.")
+    _authorize_client_action(job, caller_token)
+
+    if job.get("queue_state") != "AWAITING_PAYMENT":
+        raise HTTPException(
+            status_code=400,
+            detail="Bu buyurtma hozir to'lov kutish holatida emas.",
+        )
+
+    original_receipt_name = (receipt.filename or "chek.jpg").strip()
+    ext = Path(original_receipt_name).suffix.lower()
+    if ext not in _ALLOWED_RECEIPT_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail="To'lov cheki faqat rasm (JPG, PNG, WEBP) yoki PDF formatda bo'lishi kerak.",
+        )
+
+    content = await receipt.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="Yuklangan chek fayli bo'sh.")
+    if len(content) > _MAX_RECEIPT_BYTES:
+        raise HTTPException(status_code=400, detail="Chek fayli hajmi 10 MB dan oshmasligi kerak.")
+
+    job_dir = JOBS_DIR / job_id
+    job_dir.mkdir(parents=True, exist_ok=True)
+    receipt_path = job_dir / f"receipt{ext}"
+    receipt_path.write_bytes(content)
+
+    now = time.time()
+    uploaded_iso = datetime.now(timezone.utc).isoformat()
+    update_job_queue_fields(
+        job_id,
+        {
+            "receipt_path": str(receipt_path),
+            "receipt_filename": original_receipt_name[:180],
+            "receipt_uploaded_at": uploaded_iso,
+        },
+    )
+
+    deadline_ts = float(job.get("payment_deadline_ts") or 0.0)
+    if deadline_ts > 0 and now > deadline_ts + 5:
+        expired_msg = "120 soniyalik to'lov muddati tugadi. 'Vaqtni yangilash' tugmasini bosib qayta urinib ko'ring."
+        update_job_queue_fields(
+            job_id,
+            {
+                "payment_status": "EXPIRED",
+                "payment_note": expired_msg,
+                "status_message": expired_msg,
+            },
+        )
+        raise HTTPException(status_code=400, detail=expired_msg)
+
+    expected_cost = int(job.get("estimated_cost") or 0)
+    if expected_cost <= 0:
+        verification = {
+            "verified": True,
+            "transaction": {"tx_uid": f"free_{job_id}"},
+            "message": "Bepul buyurtma avtomatik tasdiqlandi.",
+        }
+    else:
+        created_ts = int(float(job.get("payment_created_ts") or now))
+        verification = await asyncio.to_thread(
+            verify_and_claim_humo_payment,
+            job_id=job_id,
+            expected_amount_uzs=expected_cost,
+            payment_created_ts=created_ts,
+            attempts=3,
+            delay_seconds=2.0,
+        )
+
+    if not verification.get("verified"):
+        fail_msg = verification.get("message") or "To'lov tasdiqlanmadi."
+        update_job_queue_fields(
+            job_id,
+            {
+                "payment_status": "UNVERIFIED",
+                "payment_note": fail_msg,
+                "status_message": fail_msg,
+            },
+        )
+        raise HTTPException(status_code=400, detail=fail_msg)
+
+    tx = verification.get("transaction") or {}
+    verified_iso = datetime.now(timezone.utc).isoformat()
+    with QUEUE_LOCK:
+        latest = get_print_job(job_id)
+        if not latest or latest.get("queue_state") != "AWAITING_PAYMENT":
+            raise HTTPException(status_code=400, detail="Buyurtma holati o'zgargan.")
+        update_job_queue_fields(
+            job_id,
+            {
+                "payment_status": "PAID",
+                "payment_tx_id": str(tx.get("tx_uid") or ""),
+                "payment_verified_at": verified_iso,
+                "payment_note": str(verification.get("message") or "To'lov tasdiqlandi."),
+            },
+        )
+        dispatched_job, active_job, waiting_jobs = _enqueue_or_dispatch_paid_job(job_id)
+        return _job_to_response(
+            dispatched_job,
+            active_job=active_job,
+            waiting_jobs=waiting_jobs,
+            caller_token=caller_token,
+            include_secret_token=True,
+        )
+
+
+@app.post("/api/print-jobs/{job_id}/renew-payment", response_model=PrintJobResponse)
+def renew_job_payment_timer(
+    job_id: str,
+    payload: JobConfirmRequest,
+    x_client_token: str = Header(default=""),
+) -> PrintJobResponse:
+    caller_token = (payload.client_token or x_client_token or "").strip()
+    with QUEUE_LOCK:
+        job = get_print_job(job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="Buyurtma topilmadi.")
+        _authorize_client_action(job, caller_token)
+        if job.get("queue_state") != "AWAITING_PAYMENT":
+            raise HTTPException(
+                status_code=400,
+                detail="Faqat to'lov kutayotgan buyurtma vaqtini uzaytirish mumkin.",
+            )
+        settings = get_settings()
+        window_seconds = max(30, int(settings.get("payment_window_seconds", 120) or 120))
+        now = time.time()
+        created_ts = float(job.get("payment_created_ts") or now)
+        updated = update_job_queue_fields(
+            job_id,
+            {
+                "payment_status": "AWAITING_PAYMENT",
+                "payment_created_ts": created_ts,
+                "payment_deadline_ts": now + window_seconds,
+                "payment_note": "",
+                "status_message": f"To'lov oynasi yangilandi: {window_seconds} soniya ichida to'lang va chek yuklang.",
+            },
+        )
+        assert updated is not None
+        active_job, waiting_jobs = _tick_and_advance_queue(now_ts=now)
+        return _job_to_response(
+            updated,
+            active_job=active_job,
+            waiting_jobs=waiting_jobs,
+            now_ts=now,
+            caller_token=caller_token,
+            include_secret_token=True,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1005,13 +1295,78 @@ def admin_dashboard(_admin: str = Depends(require_admin)) -> AdminDashboardRespo
     settings = get_settings()
     stats = get_admin_stats()
     printers = [PrinterInfo(**p) for p in discover_all_printers(settings.get("agent_printers"))]
-    jobs = [_job_to_response(j) for j in list_print_jobs(limit=200)]
+    jobs = [_job_to_response(j, include_secret_token=True) for j in list_print_jobs(limit=200)]
+    tg_status = get_telegram_status(check_remote=False)
     return AdminDashboardResponse(
         stats=AdminStats(**stats),
         settings=_settings_to_payload(settings),
         printers=printers,
         jobs=jobs,
+        telegram=TelegramStatusInfo(**tg_status),
     )
+
+
+@app.get("/api/admin/print-jobs/{job_id}/receipt")
+def admin_get_job_receipt(
+    job_id: str,
+    _admin: str = Depends(require_admin_header_or_query),
+) -> FileResponse:
+    job = get_print_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Buyurtma topilmadi.")
+    raw_path = (job.get("receipt_path") or "").strip()
+    if not raw_path:
+        raise HTTPException(status_code=404, detail="Ushbu buyurtma uchun to'lov cheki yuklanmagan.")
+    receipt_file = Path(raw_path)
+    if not receipt_file.exists():
+        raise HTTPException(status_code=404, detail="Chek fayli diskda topilmadi.")
+    media_type, _ = mimetypes.guess_type(str(receipt_file))
+    safe_name = (job.get("receipt_filename") or receipt_file.name).replace('"', "")
+    return FileResponse(
+        path=receipt_file,
+        media_type=media_type or "application/octet-stream",
+        headers={"Content-Disposition": f'inline; filename="{safe_name}"'},
+    )
+
+
+@app.post("/api/admin/telegram/send-code")
+def admin_telegram_send_code(
+    payload: TelegramSendCodeRequest,
+    _admin: str = Depends(require_admin),
+) -> dict:
+    try:
+        return admin_send_telegram_code(payload.phone, payload.bot_username)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Telegram kodi yuborishda xato: {exc}") from exc
+
+
+@app.post("/api/admin/telegram/verify-code")
+def admin_telegram_verify_code(
+    payload: TelegramVerifyCodeRequest,
+    _admin: str = Depends(require_admin),
+) -> dict:
+    try:
+        return admin_verify_telegram_code(
+            auth_token=payload.auth_token,
+            code=payload.code,
+            password=payload.password,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Telegram tasdiqlashda xato: {exc}") from exc
+
+
+@app.post("/api/admin/telegram/disconnect")
+def admin_telegram_disconnect(_admin: str = Depends(require_admin)) -> dict:
+    return admin_disconnect_telegram()
+
+
+@app.get("/api/admin/telegram/recent-payments")
+def admin_telegram_recent_payments(_admin: str = Depends(require_admin)) -> dict:
+    return fetch_recent_humo_topups(limit=20)
 
 
 @app.put("/api/admin/settings", response_model=AdminSettingsPayload)
@@ -1020,8 +1375,10 @@ def admin_update_settings(
     _admin: str = Depends(require_admin),
 ) -> AdminSettingsPayload:
     data = payload.model_dump()
-    if not data.get("agent_api_key", "").strip():
+    if not (data.get("agent_api_key") or "").strip():
         data.pop("agent_api_key", None)
+    if data.get("telegram_bot_username"):
+        data["telegram_bot_username"] = normalize_bot_username(data["telegram_bot_username"])
     updated = update_settings(data)
     return _settings_to_payload(updated)
 
@@ -1056,6 +1413,21 @@ def admin_update_job(
         job = get_print_job(job_id)
         if not job:
             raise HTTPException(status_code=404, detail="Buyurtma topilmadi.")
+
+        if payload.status == "APPROVE_PAYMENT":
+            verified_iso = datetime.now(timezone.utc).isoformat()
+            note = payload.status_message.strip() or "Admin tomonidan to'lov cheki asosida tasdiqlandi."
+            update_job_queue_fields(
+                job_id,
+                {
+                    "payment_status": "PAID",
+                    "payment_tx_id": job.get("payment_tx_id") or f"admin_manual_{job_id}",
+                    "payment_verified_at": verified_iso,
+                    "payment_note": note,
+                },
+            )
+            updated, active_job, waiting_jobs = _enqueue_or_dispatch_paid_job(job_id)
+            return _job_to_response(updated, active_job=active_job, waiting_jobs=waiting_jobs)
 
         if payload.status == "DISPATCH_PRINTER":
             settings = get_settings()

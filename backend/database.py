@@ -148,6 +148,15 @@ def init_db(db_path: Path | None = None) -> None:
             "printing_until_ts": "REAL NOT NULL DEFAULT 0",
             "confirm_deadline_ts": "REAL NOT NULL DEFAULT 0",
             "completed_at": "TEXT NOT NULL DEFAULT ''",
+            "payment_status": "TEXT NOT NULL DEFAULT 'NOT_REQUIRED'",
+            "payment_created_ts": "REAL NOT NULL DEFAULT 0",
+            "payment_deadline_ts": "REAL NOT NULL DEFAULT 0",
+            "payment_tx_id": "TEXT NOT NULL DEFAULT ''",
+            "payment_verified_at": "TEXT NOT NULL DEFAULT ''",
+            "payment_note": "TEXT NOT NULL DEFAULT ''",
+            "receipt_path": "TEXT NOT NULL DEFAULT ''",
+            "receipt_filename": "TEXT NOT NULL DEFAULT ''",
+            "receipt_uploaded_at": "TEXT NOT NULL DEFAULT ''",
         }
         for col_name, col_def in migrations.items():
             if col_name not in cols:
@@ -158,6 +167,19 @@ def init_db(db_path: Path | None = None) -> None:
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL,
                 updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS used_payment_transactions (
+                tx_uid TEXT PRIMARY KEY,
+                job_id TEXT NOT NULL,
+                amount_uzs INTEGER NOT NULL,
+                card_mask TEXT NOT NULL DEFAULT '',
+                msg_date TEXT NOT NULL DEFAULT '',
+                raw_text TEXT NOT NULL DEFAULT '',
+                claimed_at TEXT NOT NULL
             )
             """
         )
@@ -179,6 +201,15 @@ def init_db(db_path: Path | None = None) -> None:
             "agent_last_seen": "",
             "agent_hostname": "",
             "agent_printers_json": "[]",
+            "payment_enabled": "1",
+            "payment_card_number": "",
+            "payment_card_holder": "",
+            "payment_window_seconds": "120",
+            "telegram_bot_username": "@HUMOcardbot",
+            "telegram_session_string": "",
+            "telegram_account_name": "",
+            "telegram_account_username": "",
+            "telegram_account_phone": "",
         }
         for key, value in defaults.items():
             conn.execute(
@@ -235,6 +266,15 @@ def get_settings(db_path: Path | None = None) -> dict[str, Any]:
         "agent_last_seen": raw.get("agent_last_seen", ""),
         "agent_hostname": raw.get("agent_hostname", ""),
         "agent_printers": agent_printers,
+        "payment_enabled": str(raw.get("payment_enabled", "1")).strip().lower() not in {"0", "false", "no", ""},
+        "payment_card_number": raw.get("payment_card_number", ""),
+        "payment_card_holder": raw.get("payment_card_holder", ""),
+        "payment_window_seconds": max(30, int(raw.get("payment_window_seconds", "120") or 120)),
+        "telegram_bot_username": raw.get("telegram_bot_username", "@HUMOcardbot"),
+        "telegram_session_string": raw.get("telegram_session_string", ""),
+        "telegram_account_name": raw.get("telegram_account_name", ""),
+        "telegram_account_username": raw.get("telegram_account_username", ""),
+        "telegram_account_phone": raw.get("telegram_account_phone", ""),
     }
 
 
@@ -251,18 +291,35 @@ def update_settings(updates: dict[str, Any], db_path: Path | None = None) -> dic
         "printer_mode": "printer_mode",
         "default_printer_name": "default_printer_name",
         "agent_api_key": "agent_api_key",
+        "payment_enabled": "payment_enabled",
+        "payment_card_number": "payment_card_number",
+        "payment_card_holder": "payment_card_holder",
+        "payment_window_seconds": "payment_window_seconds",
+        "telegram_bot_username": "telegram_bot_username",
+        "telegram_session_string": "telegram_session_string",
+        "telegram_account_name": "telegram_account_name",
+        "telegram_account_username": "telegram_account_username",
+        "telegram_account_phone": "telegram_account_phone",
     }
     now = _utc_now_iso()
     with get_connection(db_path) as conn:
         for src_key, db_key in key_map.items():
             if src_key in updates and updates[src_key] is not None:
+                raw_val = updates[src_key]
+                if src_key == "payment_enabled":
+                    if isinstance(raw_val, bool):
+                        str_val = "1" if raw_val else "0"
+                    else:
+                        str_val = "0" if str(raw_val).strip().lower() in {"0", "false", "no", ""} else "1"
+                else:
+                    str_val = str(raw_val)
                 conn.execute(
                     """
                     INSERT INTO system_settings (key, value, updated_at)
                     VALUES (?, ?, ?)
                     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
                     """,
-                    (db_key, str(updates[src_key]), now),
+                    (db_key, str_val, now),
                 )
     return get_settings(db_path=db_path)
 
@@ -369,6 +426,15 @@ _ALLOWED_JOB_UPDATE_FIELDS = frozenset(
         "printing_until_ts",
         "confirm_deadline_ts",
         "completed_at",
+        "payment_status",
+        "payment_created_ts",
+        "payment_deadline_ts",
+        "payment_tx_id",
+        "payment_verified_at",
+        "payment_note",
+        "receipt_path",
+        "receipt_filename",
+        "receipt_uploaded_at",
     }
 )
 
@@ -390,6 +456,15 @@ def _row_to_job(row: sqlite3.Row) -> dict[str, Any]:
     data["printing_until_ts"] = float(data.get("printing_until_ts") or 0.0)
     data["confirm_deadline_ts"] = float(data.get("confirm_deadline_ts") or 0.0)
     data["completed_at"] = str(data.get("completed_at") or "")
+    data["payment_status"] = str(data.get("payment_status") or "NOT_REQUIRED")
+    data["payment_created_ts"] = float(data.get("payment_created_ts") or 0.0)
+    data["payment_deadline_ts"] = float(data.get("payment_deadline_ts") or 0.0)
+    data["payment_tx_id"] = str(data.get("payment_tx_id") or "")
+    data["payment_verified_at"] = str(data.get("payment_verified_at") or "")
+    data["payment_note"] = str(data.get("payment_note") or "")
+    data["receipt_path"] = str(data.get("receipt_path") or "")
+    data["receipt_filename"] = str(data.get("receipt_filename") or "")
+    data["receipt_uploaded_at"] = str(data.get("receipt_uploaded_at") or "")
     return data
 
 
@@ -409,8 +484,11 @@ def create_print_job(job: dict[str, Any], db_path: Path | None = None) -> dict[s
                 color_sheets, segments_json, printer_name, printer_mode,
                 status, status_message, output_pdf_path, created_at,
                 client_token, device_label, client_ip, queue_state, started_at,
-                printing_until_ts, confirm_deadline_ts, completed_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                printing_until_ts, confirm_deadline_ts, completed_at,
+                payment_status, payment_created_ts, payment_deadline_ts,
+                payment_tx_id, payment_verified_at, payment_note,
+                receipt_path, receipt_filename, receipt_uploaded_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 job["id"],
@@ -449,6 +527,15 @@ def create_print_job(job: dict[str, Any], db_path: Path | None = None) -> dict[s
                 float(job.get("printing_until_ts", 0.0) or 0.0),
                 float(job.get("confirm_deadline_ts", 0.0) or 0.0),
                 job.get("completed_at", ""),
+                job.get("payment_status", "NOT_REQUIRED"),
+                float(job.get("payment_created_ts", 0.0) or 0.0),
+                float(job.get("payment_deadline_ts", 0.0) or 0.0),
+                job.get("payment_tx_id", ""),
+                job.get("payment_verified_at", ""),
+                job.get("payment_note", ""),
+                job.get("receipt_path", ""),
+                job.get("receipt_filename", ""),
+                job.get("receipt_uploaded_at", ""),
             ),
         )
     stored = get_print_job(job["id"], db_path=db_path)
@@ -551,6 +638,11 @@ def compute_job_queue_enrichment(
         if q_state == "AWAITING_CONFIRMATION"
         else 0
     )
+    payment_rem = (
+        max(0, int(math.ceil(float(job.get("payment_deadline_ts") or 0.0) - now)))
+        if q_state == "AWAITING_PAYMENT"
+        else 0
+    )
 
     queue_position = 0
     estimated_wait_seconds = 0
@@ -567,6 +659,7 @@ def compute_job_queue_enrichment(
         "queue_position": queue_position,
         "remaining_print_seconds": remaining_print,
         "confirm_remaining_seconds": confirm_rem,
+        "payment_remaining_seconds": payment_rem,
         "estimated_wait_seconds": estimated_wait_seconds,
     }
 
@@ -605,6 +698,10 @@ def update_print_job_status(
         fields["confirm_deadline_ts"] = 0.0
     elif status == "AWAITING_CONFIRMATION":
         fields["queue_state"] = "AWAITING_CONFIRMATION"
+    elif status == "AWAITING_PAYMENT":
+        fields["queue_state"] = "AWAITING_PAYMENT"
+        fields["printing_until_ts"] = 0.0
+        fields["confirm_deadline_ts"] = 0.0
     elif existing.get("queue_state") not in {"ACTIVE_PRINTING", "AWAITING_CONFIRMATION"}:
         fields["queue_state"] = "ACTIVE_PRINTING"
         if not existing.get("started_at"):
@@ -711,3 +808,54 @@ def claim_next_agent_job(db_path: Path | None = None) -> dict[str, Any] | None:
             return None
         claimed = conn.execute("SELECT * FROM print_jobs WHERE id = ?", (job_id,)).fetchone()
     return _row_to_job(claimed) if claimed else None
+
+
+def is_payment_tx_used(tx_uid: str, db_path: Path | None = None) -> bool:
+    """Return True if a HUMO bot transaction UID was already claimed by a print job."""
+    if not tx_uid:
+        return False
+    with get_connection(db_path) as conn:
+        row = conn.execute(
+            "SELECT 1 FROM used_payment_transactions WHERE tx_uid = ?",
+            (tx_uid,),
+        ).fetchone()
+    return row is not None
+
+
+def list_used_payment_txs(limit: int = 50, db_path: Path | None = None) -> list[dict[str, Any]]:
+    """Return recently claimed HUMO payment transactions for Admin monitoring."""
+    with get_connection(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT * FROM used_payment_transactions
+            ORDER BY claimed_at DESC, rowid DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def claim_payment_transaction(
+    tx_uid: str,
+    job_id: str,
+    amount_uzs: int,
+    card_mask: str = "",
+    msg_date: str = "",
+    raw_text: str = "",
+    db_path: Path | None = None,
+) -> bool:
+    """Atomically claim a @HUMOcardbot transaction UID so it can never be reused."""
+    if not tx_uid:
+        return False
+    now = _utc_now_iso()
+    with QUEUE_LOCK, get_connection(db_path) as conn:
+        cur = conn.execute(
+            """
+            INSERT OR IGNORE INTO used_payment_transactions (
+                tx_uid, job_id, amount_uzs, card_mask, msg_date, raw_text, claimed_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (tx_uid, job_id, int(amount_uzs), card_mask, msg_date, raw_text, now),
+        )
+    return cur.rowcount > 0

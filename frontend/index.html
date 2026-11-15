@@ -519,12 +519,110 @@
           </div>
         </div>
 
+        <!-- Payment & Telegram HUMO Bot Integration Card -->
+        <div class="panel-card admin-payment-card">
+          <div class="panel-header">
+            <div>
+              <h3>To'lov kartasi va Telegram (@HUMOcardbot) avto-tekshiruvi</h3>
+              <p>O'quvchilar chop etishdan oldin kartaga to'laydi, chek yuklaydi va Telegram bot xabari orqali darhol tasdiqlanadi.</p>
+            </div>
+            <span id="adminTelegramStatusBadge" class="status-pill status-neutral">Tekshirilmoqda...</span>
+          </div>
+
+          <div class="admin-payment-grid">
+            <div class="admin-payment-col">
+              <div class="form-group">
+                <label class="checkbox-inline" for="paymentEnabledInput">
+                  <input id="paymentEnabledInput" type="checkbox" checked />
+                  <span><strong>To'lov tizimi faol</strong> (chop etishdan oldin 120s karta to'lovi va chek talab qilinadi)</span>
+                </label>
+              </div>
+
+              <div class="admin-fields-2col">
+                <div class="form-group">
+                  <label class="form-label" for="paymentCardNumberInput">HUMO karta raqami</label>
+                  <input id="paymentCardNumberInput" type="text" class="text-input" placeholder="9860 3501 2345 5728" autocomplete="off" />
+                </div>
+                <div class="form-group">
+                  <label class="form-label" for="paymentCardHolderInput">Karta egasi</label>
+                  <input id="paymentCardHolderInput" type="text" class="text-input" placeholder="DIYORBEK" autocomplete="off" />
+                </div>
+              </div>
+
+              <div class="admin-fields-2col">
+                <div class="form-group">
+                  <label class="form-label" for="telegramBotUsernameInput">Telegram bot linki / username</label>
+                  <input id="telegramBotUsernameInput" type="text" class="text-input" value="https://t.me/HUMOcardbot" placeholder="https://t.me/HUMOcardbot" autocomplete="off" />
+                </div>
+                <div class="form-group">
+                  <label class="form-label" for="paymentWindowSecondsInput">To'lov vaqti (soniya)</label>
+                  <input id="paymentWindowSecondsInput" type="number" min="30" max="900" class="text-input" value="120" />
+                </div>
+              </div>
+
+              <button type="button" id="savePaymentSettingsBtn" class="btn btn-primary full-width">
+                Karta va to'lov sozlamalarini saqlash
+              </button>
+            </div>
+
+            <div class="admin-payment-col">
+              <div class="telegram-auth-box" id="adminTelegramAuthBox">
+                <div class="tg-box-head">
+                  <strong>Telegram hisob ulanishi (Telethon StringSession)</strong>
+                  <button type="button" id="telegramDisconnectBtn" class="btn btn-danger-outline btn-xs hidden">
+                    Hisobni uzish
+                  </button>
+                </div>
+                <p class="tg-box-sub" id="adminTelegramAccountDetails">
+                  Telegram akkaunt ulansa, sayt botdagi tushumlarni real vaqtda avtomatik o'qiydi.
+                </p>
+
+                <div class="tg-phone-row">
+                  <input id="telegramPhoneInput" type="text" class="text-input" placeholder="+998901234567" autocomplete="tel" />
+                  <button type="button" id="telegramSendCodeBtn" class="btn btn-secondary btn-sm">
+                    Kod yuborish
+                  </button>
+                </div>
+
+                <div id="telegramCodeGroup" class="tg-code-group hidden">
+                  <div class="admin-fields-2col">
+                    <div class="form-group">
+                      <label class="form-label" for="telegramCodeInput">Telegram tasdiqlash kodi</label>
+                      <input id="telegramCodeInput" type="text" class="text-input" placeholder="12345" autocomplete="one-time-code" />
+                    </div>
+                    <div class="form-group">
+                      <label class="form-label" for="telegramPasswordInput">2-bosqichli parol (bo'lsa)</label>
+                      <input id="telegramPasswordInput" type="password" class="text-input" placeholder="Ixtiyoriy 2FA parol" autocomplete="off" />
+                    </div>
+                  </div>
+                  <button type="button" id="telegramVerifyCodeBtn" class="btn btn-success btn-sm full-width">
+                    Tasdiqlash va sessiyani saqlash
+                  </button>
+                </div>
+                <div id="telegramAuthMessage" class="tg-auth-msg hidden"></div>
+              </div>
+
+              <div class="humo-feed-box">
+                <div class="tg-box-head">
+                  <strong>@HUMOcardbot oxirgi tushumlari</strong>
+                  <button type="button" id="refreshHumoPaymentsBtn" class="btn btn-secondary btn-xs">
+                    Yangilash
+                  </button>
+                </div>
+                <div id="adminHumoPaymentsList" class="humo-feed-list">
+                  <div class="humo-feed-empty">Oxirgi to'ldirishlarni ko'rish uchun "Yangilash" tugmasini bosing.</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
         <!-- Card 4: Full Order History & Management -->
         <div class="panel-card admin-history-card">
           <div class="panel-header">
             <div>
               <h3>Barcha buyurtmalar tarixi va navbati</h3>
-              <p>O'quvchilar yuborgan barcha hujjatlar, tanlangan betlar, hisob-kitoblar va tayyor PDF fayllar</p>
+              <p>O'quvchilar yuborgan barcha hujjatlar, tanlangan betlar, to'lov cheklari va tayyor PDF fayllar</p>
             </div>
             <div class="history-toolbar">
               <input
@@ -535,6 +633,7 @@
               />
               <select id="adminJobStatusFilter" class="select-input status-filter-select">
                 <option value="ALL">Barcha holatlar</option>
+                <option value="AWAITING_PAYMENT">To'lov kutilmoqda</option>
                 <option value="WAITING_IN_QUEUE">Kutish navbatida</option>
                 <option value="READY_IN_QUEUE">Faol chop etishda / Test</option>
                 <option value="QUEUED_FOR_AGENT">Pi navbatida</option>

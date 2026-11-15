@@ -210,6 +210,67 @@ window.SmartPrintApi = (() => {
     return handleResponse(res);
   }
 
+  async function verifyJobPayment(jobId, receiptFile) {
+    const fd = new FormData();
+    fd.append("receipt", receiptFile);
+    fd.append("client_token", getClientToken());
+    const res = await fetch(`/api/print-jobs/${encodeURIComponent(jobId)}/verify-payment`, {
+      method: "POST",
+      headers: { "X-Client-Token": getClientToken() },
+      body: fd,
+    });
+    return handleResponse(res);
+  }
+
+  async function renewJobPayment(jobId) {
+    const res = await fetch(`/api/print-jobs/${encodeURIComponent(jobId)}/renew-payment`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Client-Token": getClientToken(),
+      },
+      body: JSON.stringify({ client_token: getClientToken() }),
+    });
+    return handleResponse(res);
+  }
+
+  function getReceiptUrl(jobId) {
+    return `/api/admin/print-jobs/${encodeURIComponent(jobId)}/receipt?token=${encodeURIComponent(getAdminToken())}`;
+  }
+
+  async function sendTelegramCode(phone, botUsername) {
+    const res = await fetch("/api/admin/telegram/send-code", {
+      method: "POST",
+      headers: authHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({ phone, bot_username: botUsername }),
+    });
+    return handleResponse(res);
+  }
+
+  async function verifyTelegramCode(authToken, code, password = "") {
+    const res = await fetch("/api/admin/telegram/verify-code", {
+      method: "POST",
+      headers: authHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({ auth_token: authToken, code, password }),
+    });
+    return handleResponse(res);
+  }
+
+  async function disconnectTelegram() {
+    const res = await fetch("/api/admin/telegram/disconnect", {
+      method: "POST",
+      headers: authHeaders(),
+    });
+    return handleResponse(res);
+  }
+
+  async function getRecentHumoPayments() {
+    const res = await fetch("/api/admin/telegram/recent-payments", {
+      headers: authHeaders(),
+    });
+    return handleResponse(res);
+  }
+
   async function deleteAdminPrintJob(jobId) {
     const res = await fetch(`/api/admin/print-jobs/${encodeURIComponent(jobId)}`, {
       method: "DELETE",
@@ -245,5 +306,12 @@ window.SmartPrintApi = (() => {
     updateAdminJobStatus,
     deleteAdminPrintJob,
     clearAdminPrintJobs,
+    verifyJobPayment,
+    renewJobPayment,
+    getReceiptUrl,
+    sendTelegramCode,
+    verifyTelegramCode,
+    disconnectTelegram,
+    getRecentHumoPayments,
   };
 })();

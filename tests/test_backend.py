@@ -5,7 +5,9 @@ from __future__ import annotations
 import io
 import subprocess
 import tempfile
+import time
 import unittest
+import uuid
 from pathlib import Path
 from unittest.mock import patch
 
@@ -16,6 +18,8 @@ from pptx import Presentation
 from pypdf import PdfReader
 
 from backend.config import SAMPLES_DIR
+from backend.database import get_connection, get_settings, update_settings
+from backend.humo_verifier import parse_humo_topup_message
 from backend.main import app
 from backend.services.converter import ensure_sample_pdf, normalize_to_pdf
 from backend.services.pdf_processor import (
@@ -134,6 +138,19 @@ class ConverterAndSlicerTests(unittest.TestCase):
 class ApiIntegrationTests(unittest.TestCase):
     def setUp(self) -> None:
         self.client = TestClient(app)
+        self._orig_settings = get_settings()
+        update_settings({"payment_enabled": False})
+
+    def tearDown(self) -> None:
+        update_settings(
+            {
+                "payment_enabled": True,
+                "payment_card_number": self._orig_settings.get("payment_card_number", ""),
+                "payment_card_holder": self._orig_settings.get("payment_card_holder", ""),
+                "payment_window_seconds": self._orig_settings.get("payment_window_seconds", 120),
+                "telegram_bot_username": self._orig_settings.get("telegram_bot_username", "@HUMOcardbot"),
+            }
+        )
 
     def test_system_status_defaults_to_dry_run(self) -> None:
         res = self.client.get("/api/system-status")
@@ -738,6 +755,221 @@ class ApiIntegrationTests(unittest.TestCase):
         finally:
             for _, job_data in created_jobs:
                 self.client.delete(f"/api/admin/print-jobs/{job_data['id']}", headers=headers)
+
+    def test_humo_payment_120s_receipt_and_bot_verification_flow(self) -> None:
+        login = self.client.post(
+            "/api/admin/login", json={"username": "admin", "password": "admin123"}
+        ).json()
+        admin_headers = {"Authorization": f"Bearer {login['token']}"}
+
+        # Enable Mode B payment gateway and configure HUMO card requisites
+        cur_settings = self._orig_settings
+        upd_res = self.client.put(
+            "/api/admin/settings",
+            headers=admin_headers,
+            json={
+                "bw_simplex": cur_settings["bw_simplex"],
+                "bw_duplex": cur_settings["bw_duplex"],
+                "color_simplex": cur_settings["color_simplex"],
+                "color_duplex": cur_settings["color_duplex"],
+                "seconds_bw_per_sheet": cur_settings["seconds_bw_per_sheet"],
+                "seconds_color_per_sheet": cur_settings["seconds_color_per_sheet"],
+                "warmup_seconds": cur_settings["warmup_seconds"],
+                "printer_mode": cur_settings["printer_mode"],
+                "default_printer_name": cur_settings["default_printer_name"],
+                "agent_api_key": cur_settings.get("agent_api_key", ""),
+                "payment_enabled": True,
+                "payment_card_number": "9860 3501 2345 5728",
+                "payment_card_holder": "DIYORBEK",
+                "payment_window_seconds": 120,
+                "telegram_bot_username": "https://t.me/HUMOcardbot",
+            },
+        )
+        self.assertEqual(upd_res.status_code, 200)
+        self.assertTrue(upd_res.json()["payment_enabled"])
+        self.assertEqual(upd_res.json()["telegram_bot_username"], "@HUMOcardbot")
+
+        sys_res = self.client.get("/api/system-status").json()
+        self.assertTrue(sys_res["payment"]["enabled"])
+        self.assertEqual(sys_res["payment"]["card_number"], "9860 3501 2345 5728")
+        self.assertEqual(sys_res["payment"]["window_seconds"], 120)
+
+        doc = self.client.post("/api/documents/sample").json()
+        created_ids: list[str] = []
+        test_tx_id = f"998877{uuid.uuid4().hex[:6]}"
+        test_tx_uid = f"humo_{test_tx_id}"
+
+        img_buf = io.BytesIO()
+        Image.new("RGB", (40, 40), color="green").save(img_buf, format="PNG")
+        receipt_bytes = img_buf.getvalue()
+
+        try:
+            # Clear active jobs if any from earlier manual runs
+            existing_live = self.client.get("/api/queue/live").json()
+            if existing_live.get("active_job"):
+                self.client.delete(
+                    f"/api/admin/print-jobs/{existing_live['active_job']['id']}",
+                    headers=admin_headers,
+                )
+
+            token1 = "stu_pay_user_001"
+            res1 = self.client.post(
+                "/api/print-jobs",
+                headers={"X-Client-Token": token1},
+                json={
+                    "document_id": doc["id"],
+                    "selected_pages": [1, 2],
+                    "page_range_text": "1-2",
+                    "copies": 1,
+                    "color_mode": "bw",
+                    "duplex": "simplex",
+                    "student_name": "To'lovchi Talaba 1",
+                    "client_token": token1,
+                },
+            )
+            self.assertEqual(res1.status_code, 200, res1.text)
+            job1 = res1.json()
+            created_ids.append(job1["id"])
+            self.assertEqual(job1["queue_state"], "AWAITING_PAYMENT")
+            self.assertEqual(job1["payment_status"], "AWAITING_PAYMENT")
+            self.assertGreater(job1["payment_remaining_seconds"], 0)
+
+            # Unpaid job must NOT block the physical printer queue
+            live_before = self.client.get("/api/queue/live").json()
+            self.assertFalse(live_before["printer_busy"])
+            self.assertEqual(live_before["printer_state"], "IDLE")
+
+            # 1) Unmatched payment returns 400 and still stores receipt for Admin
+            with patch(
+                "backend.main.verify_and_claim_humo_payment",
+                return_value={
+                    "verified": False,
+                    "error_code": "PAYMENT_NOT_FOUND",
+                    "message": "@HUMOcardbot da to'lov topilmadi.",
+                },
+            ):
+                fail_res = self.client.post(
+                    f"/api/print-jobs/{job1['id']}/verify-payment",
+                    headers={"X-Client-Token": token1},
+                    data={"client_token": token1},
+                    files={"receipt": ("chek1.png", receipt_bytes, "image/png")},
+                )
+            self.assertEqual(fail_res.status_code, 400)
+
+            # Receipt endpoint must reject anonymous callers (401) and allow Admin (200)
+            anon_rcpt = self.client.get(f"/api/admin/print-jobs/{job1['id']}/receipt")
+            self.assertEqual(anon_rcpt.status_code, 401)
+            adm_rcpt = self.client.get(
+                f"/api/admin/print-jobs/{job1['id']}/receipt", headers=admin_headers
+            )
+            self.assertEqual(adm_rcpt.status_code, 200)
+            self.assertEqual(adm_rcpt.content, receipt_bytes)
+
+            # 2) Genuine @HUMOcardbot top-up message parsing + verification succeeds
+            expected_cost = int(job1["estimated_cost"])
+            formatted_amt = f"{expected_cost:,}".replace(",", ".") + ",00"
+            bot_text = (
+                f"🎉 To'ldirish\n"
+                f"➕ {formatted_amt} UZS\n"
+                f"📍 UB P2P Humo2Humo>TAS\n"
+                f"💳 HUMOCARD *5728\n"
+                f"🕓 20:05 15.11.2026\n"
+                f"💰 99.000,00 UZS"
+            )
+            parsed_tx = parse_humo_topup_message(
+                bot_text,
+                msg_id=55001,
+                msg_date=time.time(),
+                buttons=[[{"data": f"c=toggleBalance&id={test_tx_id}&balance=9900000"}]],
+            )
+            self.assertIsNotNone(parsed_tx)
+            self.assertEqual(parsed_tx["tx_uid"], test_tx_uid)
+            self.assertEqual(parsed_tx["amount_uzs"], expected_cost)
+            self.assertEqual(parsed_tx["card_mask"], "*5728")
+
+            mock_fetch_payload = {
+                "connected": True,
+                "error": "",
+                "bot_username": "@HUMOcardbot",
+                "account": {"name": "Test Admin", "username": "testadm", "phone": "+99890"},
+                "transactions": [parsed_tx],
+            }
+            with (
+                patch("backend.humo_verifier.get_saved_session_string", return_value="mock_session"),
+                patch("backend.humo_verifier._fetch_bot_messages_sync", return_value=mock_fetch_payload),
+            ):
+                ok_res = self.client.post(
+                    f"/api/print-jobs/{job1['id']}/verify-payment",
+                    headers={"X-Client-Token": token1},
+                    data={"client_token": token1},
+                    files={"receipt": ("chek1.png", receipt_bytes, "image/png")},
+                )
+            self.assertEqual(ok_res.status_code, 200, ok_res.text)
+            paid_job1 = ok_res.json()
+            self.assertEqual(paid_job1["queue_state"], "ACTIVE_PRINTING")
+            self.assertEqual(paid_job1["payment_status"], "PAID")
+            self.assertEqual(paid_job1["payment_tx_id"], test_tx_uid)
+            self.assertTrue(paid_job1["has_receipt"])
+
+            # 3) Anti-replay check: 2nd job with same cost CANNOT reuse same @HUMOcardbot TX
+            token2 = "stu_pay_user_002"
+            res2 = self.client.post(
+                "/api/print-jobs",
+                headers={"X-Client-Token": token2},
+                json={
+                    "document_id": doc["id"],
+                    "selected_pages": [1, 2],
+                    "page_range_text": "1-2",
+                    "copies": 1,
+                    "color_mode": "bw",
+                    "duplex": "simplex",
+                    "student_name": "To'lovchi Talaba 2",
+                    "client_token": token2,
+                },
+            )
+            self.assertEqual(res2.status_code, 200)
+            job2 = res2.json()
+            created_ids.append(job2["id"])
+
+            with (
+                patch("backend.humo_verifier.get_saved_session_string", return_value="mock_session"),
+                patch("backend.humo_verifier._fetch_bot_messages_sync", return_value=mock_fetch_payload),
+                patch("backend.humo_verifier.time.sleep", return_value=None),
+            ):
+                replay_res = self.client.post(
+                    f"/api/print-jobs/{job2['id']}/verify-payment",
+                    headers={"X-Client-Token": token2},
+                    data={"client_token": token2},
+                    files={"receipt": ("chek2.png", receipt_bytes, "image/png")},
+                )
+            self.assertEqual(replay_res.status_code, 400)
+
+            # 4) Renew payment timer works cleanly, and Admin manual approval queues job2
+            renew_res = self.client.post(
+                f"/api/print-jobs/{job2['id']}/renew-payment",
+                headers={"X-Client-Token": token2},
+                json={"client_token": token2},
+            )
+            self.assertEqual(renew_res.status_code, 200)
+            self.assertGreater(renew_res.json()["payment_remaining_seconds"], 100)
+
+            approve_res = self.client.patch(
+                f"/api/admin/print-jobs/{job2['id']}",
+                headers=admin_headers,
+                json={"status": "APPROVE_PAYMENT", "status_message": "Chek tekshirildi."},
+            )
+            self.assertEqual(approve_res.status_code, 200, approve_res.text)
+            approved_job2 = approve_res.json()
+            self.assertEqual(approved_job2["payment_status"], "PAID")
+            self.assertEqual(approved_job2["queue_state"], "WAITING_IN_QUEUE")
+        finally:
+            for jid in created_ids:
+                self.client.delete(f"/api/admin/print-jobs/{jid}", headers=admin_headers)
+            with get_connection() as conn:
+                conn.execute(
+                    "DELETE FROM used_payment_transactions WHERE tx_uid = ?",
+                    (test_tx_uid,),
+                )
 
 
 if __name__ == "__main__":

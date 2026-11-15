@@ -84,9 +84,19 @@ class PrintJobResponse(BaseModel):
     queue_position: int = 0
     remaining_print_seconds: int = 0
     confirm_remaining_seconds: int = 0
+    payment_remaining_seconds: int = 0
     estimated_wait_seconds: int = 0
     started_at: str = ""
     completed_at: str = ""
+    payment_status: str = "NOT_REQUIRED"
+    payment_deadline_ts: float = 0.0
+    payment_tx_id: str = ""
+    payment_verified_at: str = ""
+    payment_note: str = ""
+    has_receipt: bool = False
+    receipt_filename: str = ""
+    receipt_uploaded_at: str = ""
+    receipt_url: str = ""
 
 
 class PrinterInfo(BaseModel):
@@ -108,6 +118,35 @@ class PricingInfo(BaseModel):
     currency: str = "UZS"
 
 
+class PaymentConfigInfo(BaseModel):
+    enabled: bool = True
+    card_number: str = ""
+    card_holder: str = ""
+    window_seconds: int = 120
+    bot_username: str = "@HUMOcardbot"
+    telegram_connected: bool = False
+
+
+class TelegramStatusInfo(BaseModel):
+    connected: bool = False
+    bot_username: str = "@HUMOcardbot"
+    account_name: str = ""
+    account_username: str = ""
+    account_phone: str = ""
+    error: str = ""
+
+
+class TelegramSendCodeRequest(BaseModel):
+    phone: str = Field(..., min_length=7, max_length=32)
+    bot_username: str = Field(default="@HUMOcardbot", min_length=3, max_length=120)
+
+
+class TelegramVerifyCodeRequest(BaseModel):
+    auth_token: str = Field(..., min_length=8, max_length=128)
+    code: str = Field(default="", max_length=20)
+    password: str = Field(default="", max_length=120)
+
+
 class SystemStatusResponse(BaseModel):
     printer_mode: str
     hardware_connected: bool
@@ -115,6 +154,7 @@ class SystemStatusResponse(BaseModel):
     mode_description: str
     printers: list[PrinterInfo]
     pricing: PricingInfo
+    payment: PaymentConfigInfo
 
 
 class AdminLoginRequest(BaseModel):
@@ -142,6 +182,11 @@ class AdminSettingsPayload(BaseModel):
     agent_api_key: str = ""
     agent_last_seen: str = ""
     agent_hostname: str = ""
+    payment_enabled: bool = True
+    payment_card_number: str = ""
+    payment_card_holder: str = ""
+    payment_window_seconds: int = 120
+    telegram_bot_username: str = "@HUMOcardbot"
 
 
 class AdminSettingsUpdateRequest(BaseModel):
@@ -155,6 +200,11 @@ class AdminSettingsUpdateRequest(BaseModel):
     printer_mode: Literal["DRY_RUN", "LINUX_CUPS", "REMOTE_AGENT", "WINDOWS_SPOOLER"] = "DRY_RUN"
     default_printer_name: str = Field(default="", max_length=200)
     agent_api_key: str = Field(default="", max_length=200)
+    payment_enabled: bool | None = None
+    payment_card_number: str | None = Field(default=None, max_length=40)
+    payment_card_holder: str | None = Field(default=None, max_length=120)
+    payment_window_seconds: int | None = Field(default=None, ge=30, le=900)
+    telegram_bot_username: str | None = Field(default=None, max_length=120)
 
 
 class AdminPasswordUpdateRequest(BaseModel):
@@ -165,6 +215,7 @@ class AdminPasswordUpdateRequest(BaseModel):
 
 class JobStatusUpdateRequest(BaseModel):
     status: Literal[
+        "AWAITING_PAYMENT",
         "READY_IN_QUEUE",
         "WAITING_IN_QUEUE",
         "AWAITING_CONFIRMATION",
@@ -175,6 +226,7 @@ class JobStatusUpdateRequest(BaseModel):
         "CANCELLED",
         "ERROR",
         "DISPATCH_PRINTER",
+        "APPROVE_PAYMENT",
     ]
     status_message: str = Field(default="", max_length=300)
 
@@ -251,3 +303,4 @@ class AdminDashboardResponse(BaseModel):
     settings: AdminSettingsPayload
     printers: list[PrinterInfo]
     jobs: list[PrintJobResponse]
+    telegram: TelegramStatusInfo
