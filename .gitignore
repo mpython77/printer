@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+ENV/
+
+# Runtime storage & SQLite database
+storage/
+*.db
+*.sqlite
+*.sqlite3
+
+# Knowledge graph cache
+graphify-out/
+
+# OS & editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

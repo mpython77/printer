@@ -1,0 +1,638 @@
+<!DOCTYPE html>
+<html lang="uz">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TLG SmartPrint — O'quvchilar uchun Avtomatlashtirilgan Chop Etish Tizimi</title>
+  <link rel="stylesheet" href="/css/styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <!-- Top Header -->
+    <header class="topbar">
+      <div class="topbar-inner">
+        <div class="brand">
+          <div class="brand-logo" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="6 9 6 2 18 2 18 9"></polyline>
+              <path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"></path>
+              <rect x="6" y="14" width="12" height="8"></rect>
+            </svg>
+          </div>
+          <div>
+            <div class="brand-title-row">
+              <h1 class="brand-title">TLG SmartPrint</h1>
+              <span class="version-pill">v1.1</span>
+            </div>
+            <p class="brand-subtitle">O'quvchilar uchun hujjat yuklash, bet tanlash va avtomatlashtirilgan chop etish portali</p>
+          </div>
+        </div>
+
+        <div class="topbar-status">
+          <div id="printerModeBadge" class="status-pill status-pill--dryrun" title="Joriy tizim rejimi">
+            <span class="pulse-dot"></span>
+            <span id="printerModeText">Rejim: Printer ulanmagan (Test)</span>
+          </div>
+          <div id="detectedPrinterPill" class="printer-pill" title="Aniqlangan mahalliy printer">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="3" y="10" width="18" height="8" rx="2"></rect>
+              <path d="M7 10V4h10v6"></path>
+              <path d="M7 14h10v7H7z"></path>
+            </svg>
+            <span id="detectedPrinterName">Printer tekshirilmoqda...</span>
+          </div>
+
+          <button type="button" id="backToStudioBtn" class="btn btn-secondary btn-sm hidden">
+            Studiyaga qaytish
+          </button>
+          <button type="button" id="openAdminBtn" class="btn btn-admin btn-sm">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
+              <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
+            </svg>
+            <span id="openAdminBtnLabel">Admin panel</span>
+          </button>
+          <button type="button" id="adminLogoutBtn" class="btn btn-ghost btn-sm hidden">
+            Chiqish
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <main class="main-content">
+      <!-- PUBLIC STUDENT PORTAL -->
+      <section id="studentView" class="view-section is-active">
+        <!-- Step 1: Upload Hero (shown when no document is active) -->
+        <div id="uploadView" class="upload-view">
+          <div class="upload-hero-card">
+            <div id="dropZone" class="drop-zone" tabindex="0" role="button" aria-label="Hujjat yuklash maydoni">
+              <input id="fileInput" type="file" accept=".pdf,.docx,.pptx,.png,.jpg,.jpeg,.webp,.bmp,.txt,.md,.csv" hidden />
+              <div class="drop-icon-wrap">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                  <polyline points="17 8 12 3 7 8"></polyline>
+                  <line x1="12" y1="3" x2="12" y2="15"></line>
+                </svg>
+              </div>
+              <h2>Hujjatingizni shu yerga tashlang yoki tanlang</h2>
+              <p class="drop-desc">
+                Yuklangan hujjatning har bir beti ekranda chiroyli ko'rinishda ochiladi.
+                Siz kerakli betlarni birma-bir bosib yoki oraliq kiriting (masalan: <code>1-3, 5, 8</code>),
+                yoki hammasini chop etishga yuboring.
+              </p>
+
+              <div class="format-badges">
+                <span class="fmt-badge">PDF</span>
+                <span class="fmt-badge">DOCX (Word)</span>
+                <span class="fmt-badge">PPTX (Slayd)</span>
+                <span class="fmt-badge">PNG / JPG</span>
+                <span class="fmt-badge">TXT / CSV</span>
+              </div>
+
+              <div class="upload-actions">
+                <button type="button" id="browseFileBtn" class="btn btn-primary btn-lg">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                    <polyline points="14 2 14 8 20 8"></polyline>
+                  </svg>
+                  <span>Fayl tanlash</span>
+                </button>
+                <button type="button" id="loadSampleBtn" class="btn btn-secondary btn-lg">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path>
+                    <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path>
+                  </svg>
+                  <span>Namuna hujjatni ochish (8 betlik o'quv qo'llanma)</span>
+                </button>
+              </div>
+            </div>
+
+            <div id="uploadLoader" class="upload-loader hidden">
+              <div class="spinner"></div>
+              <p id="uploadLoaderText">Hujjat yuklanmoqda va betlarga ajratilmoqda...</p>
+            </div>
+
+            <!-- How it works 3-step strip -->
+            <div class="workflow-steps">
+              <div class="wf-step">
+                <div class="wf-num">1</div>
+                <div>
+                  <h3>Hujjat yuklang</h3>
+                  <p>PDF, Word, Taqdimot yoki rasm formatlari avtomatik A4 PDF ko'rinishiga keltiriladi.</p>
+                </div>
+              </div>
+              <div class="wf-step">
+                <div class="wf-num">2</div>
+                <div>
+                  <h3>Kerakli betlarni tanlang</h3>
+                  <p>Har bir betni kattalashtirib ko'ring, aylantiring va faqat kerakli sahifalarni belgilang.</p>
+                </div>
+              </div>
+              <div class="wf-step">
+                <div class="wf-num">3</div>
+                <div>
+                  <h3>Chiqarishga yuboring</h3>
+                  <p>Tanlangan betlar avtomatik ajratilib, narxi hisoblanadi va chop etishga tayyorlanadi.</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Step 2: Interactive Page Selection Studio (shown when document is loaded) -->
+        <div id="studioWorkspace" class="studio-workspace hidden">
+          <!-- Left / Main Canvas Area -->
+          <div class="studio-main">
+            <!-- Selection Toolbar -->
+            <div class="selection-toolbar">
+              <div class="toolbar-top-row">
+                <div class="selection-counter-pill">
+                  <span class="counter-dot"></span>
+                  <span id="selectionSummaryBadge">0 ta betdan 0 tasi tanlandi</span>
+                </div>
+
+                <div class="quick-select-group" role="group" aria-label="Tezkor bet tanlash">
+                  <button type="button" class="chip-btn" id="btnSelectAll">Barchasi</button>
+                  <button type="button" class="chip-btn" id="btnSelectOdd">Toq betlar</button>
+                  <button type="button" class="chip-btn" id="btnSelectEven">Juft betlar</button>
+                  <button type="button" class="chip-btn" id="btnInvertSelection">Teskari</button>
+                  <button type="button" class="chip-btn" id="btnToggleSelectedOnly" title="Faqat tanlangan betlarni ko'rish">Faqat tanlanganlar</button>
+                  <button type="button" class="chip-btn chip-btn--danger" id="btnClearSelection">Tozalash (0)</button>
+                </div>
+              </div>
+
+              <div class="toolbar-bottom-row">
+                <div class="range-input-wrap">
+                  <label for="pageRangeInput">Betlar oralig'i:</label>
+                  <input
+                    id="pageRangeInput"
+                    type="text"
+                    placeholder="Masalan: 1-3, 5, 8"
+                    autocomplete="off"
+                    spellcheck="false"
+                  />
+                  <span id="rangeErrorMsg" class="range-error hidden"></span>
+                </div>
+
+                <div class="grid-size-group" role="group" aria-label="Sahifa ko'rinish o'lchami">
+                  <span class="size-label">Ko'rinish:</span>
+                  <button type="button" class="size-btn" data-size="sm">Kichik</button>
+                  <button type="button" class="size-btn is-active" data-size="md">O'rta</button>
+                  <button type="button" class="size-btn" data-size="lg">Katta</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Visual Page Grid -->
+            <div id="pagesGrid" class="pages-grid size-md" aria-live="polite"></div>
+          </div>
+
+          <!-- Right Sticky Print Settings Panel -->
+          <aside class="settings-panel">
+            <div class="doc-info-card">
+              <div class="doc-info-head">
+                <div class="doc-file-badge" id="docFileTypeBadge">PDF</div>
+                <div class="doc-meta">
+                  <h3 id="docTitleText" title="">hujjat.pdf</h3>
+                  <p id="docMetaSubtext">8 bet • 120 KB</p>
+                </div>
+              </div>
+              <button type="button" id="changeDocumentBtn" class="btn btn-ghost btn-sm full-width">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <polyline points="1 4 1 10 7 10"></polyline>
+                  <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"></path>
+                </svg>
+                <span>Boshqa hujjat yuklash</span>
+              </button>
+            </div>
+
+            <div class="settings-card">
+              <h3 class="settings-title">Chop etish sozlamalari</h3>
+
+              <!-- Print Mode Scope -->
+              <div class="form-group">
+                <label class="form-label">Qaysi betlar chiqarilsin?</label>
+                <div class="segmented-control">
+                  <button type="button" class="seg-btn is-active" id="scopeAllBtn" data-scope="all">
+                    Barchasi
+                  </button>
+                  <button type="button" class="seg-btn" id="scopeCustomBtn" data-scope="custom">
+                    Kerakli betlar
+                  </button>
+                </div>
+              </div>
+
+              <!-- Student Name / Group -->
+              <div class="form-group">
+                <label class="form-label" for="studentNameInput">O'quvchi ismi / Guruhi</label>
+                <input
+                  id="studentNameInput"
+                  type="text"
+                  class="text-input"
+                  placeholder="Masalan: Sardorbek (10-A)"
+                  maxlength="100"
+                />
+              </div>
+
+              <!-- Copies -->
+              <div class="form-group form-row-between">
+                <label class="form-label">Nusxalar soni</label>
+                <div class="stepper">
+                  <button type="button" id="copiesMinusBtn" class="stepper-btn" aria-label="Kamaytirish">−</button>
+                  <span id="copiesValue" class="stepper-val">1</span>
+                  <button type="button" id="copiesPlusBtn" class="stepper-btn" aria-label="Oshirish">+</button>
+                </div>
+              </div>
+
+              <!-- Color Mode -->
+              <div class="form-group">
+                <label class="form-label">Rang rejimi <span class="hint-tag">(Jonli ko'rinish)</span></label>
+                <div class="segmented-control">
+                  <button type="button" class="seg-btn is-active" data-color="bw" id="colorBwBtn">
+                    Oq-qora
+                  </button>
+                  <button type="button" class="seg-btn" data-color="color" id="colorColorBtn">
+                    Rangli
+                  </button>
+                  <button type="button" class="seg-btn" data-color="mixed" id="colorMixedBtn">
+                    Aralash
+                  </button>
+                </div>
+                <div id="mixedColorBox" class="mixed-color-box hidden">
+                  <label class="form-label" for="colorPagesInput">Faqat rangli chiqadigan betlar:</label>
+                  <input id="colorPagesInput" type="text" class="text-input" placeholder="Masalan: 2, 7, 16" autocomplete="off" />
+                  <span class="mixed-hint">Yoki bet kartochkasidagi <b>🎨 Rangli / ◐ Oq-qora</b> tugmasini bosing. Qolgan betlar oq-qora chiqadi.</span>
+                </div>
+              </div>
+
+              <!-- Duplex -->
+              <div class="form-group">
+                <label class="form-label">Chiqarish turi</label>
+                <div class="segmented-control">
+                  <button type="button" class="seg-btn is-active" data-duplex="simplex" id="duplexSimplexBtn">
+                    Bir tomonlama
+                  </button>
+                  <button type="button" class="seg-btn" data-duplex="duplex" id="duplexDuplexBtn">
+                    Ikki tomonlama
+                  </button>
+                </div>
+              </div>
+
+              <!-- Orientation -->
+              <div class="form-group">
+                <label class="form-label">Sahifa yo'nalishi</label>
+                <div class="segmented-control">
+                  <button type="button" class="seg-btn is-active" data-orientation="portrait" id="orientPortraitBtn">
+                    Kitob (Vertikal)
+                  </button>
+                  <button type="button" class="seg-btn" data-orientation="landscape" id="orientLandscapeBtn">
+                    Albom (Gorizontal)
+                  </button>
+                </div>
+              </div>
+
+              <!-- Pages per sheet & Paper size -->
+              <div class="form-grid-2">
+                <div class="form-group">
+                  <label class="form-label" for="pagesPerSheetSelect">1 varaqda</label>
+                  <select id="pagesPerSheetSelect" class="select-input">
+                    <option value="1" selected>1 bet</option>
+                    <option value="2">2 bet</option>
+                    <option value="4">4 bet</option>
+                  </select>
+                </div>
+                <div class="form-group">
+                  <label class="form-label" for="paperSizeSelect">Qog'oz</label>
+                  <select id="paperSizeSelect" class="select-input">
+                    <option value="A4" selected>A4</option>
+                    <option value="A5">A5</option>
+                    <option value="Letter">Letter</option>
+                  </select>
+                </div>
+              </div>
+
+              <!-- Printer Target -->
+              <div class="form-group">
+                <label class="form-label" for="printerSelect">Maqsadli printer</label>
+                <select id="printerSelect" class="select-input">
+                  <option value="">Avtomatik (Keyin ulanadi)</option>
+                </select>
+              </div>
+
+              <!-- Live Summary Box -->
+              <div class="summary-box">
+                <div class="summary-row">
+                  <span>Tanlangan betlar:</span>
+                  <strong id="summaryPagesText">—</strong>
+                </div>
+                <div class="summary-row">
+                  <span>Nusxalar:</span>
+                  <strong id="summaryCopiesText">1 nusxa</strong>
+                </div>
+                <div class="summary-row">
+                  <span>Sarflanadigan qog'oz:</span>
+                  <strong id="summarySheetsText">0 varaq</strong>
+                </div>
+                <div class="summary-row">
+                  <span>1 varaq narxi:</span>
+                  <strong id="summaryUnitPriceText">400 so'm</strong>
+                </div>
+                <div class="summary-row">
+                  <span>Taxminiy chiqish vaqti:</span>
+                  <strong id="summaryTimeText">~0 soniya</strong>
+                </div>
+                <div class="summary-row summary-total">
+                  <span>Taxminiy hisob:</span>
+                  <strong id="summaryCostText">0 so'm</strong>
+                </div>
+              </div>
+
+              <!-- Primary Print CTA -->
+              <button type="button" id="printSubmitBtn" class="btn btn-print full-width">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <polyline points="6 9 6 2 18 2 18 9"></polyline>
+                  <path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"></path>
+                  <rect x="6" y="14" width="12" height="8"></rect>
+                </svg>
+                <span>Chiqarish</span>
+              </button>
+              <p id="printValidationHint" class="validation-hint hidden">
+                Chop etish uchun kamida 1 ta betni tanlang.
+              </p>
+            </div>
+          </aside>
+        </div>
+      </section>
+
+      <!-- PROTECTED ADMIN DASHBOARD -->
+      <section id="adminView" class="view-section">
+        <div class="admin-banner">
+          <div>
+            <h2>Admin Boshqaruv Paneli</h2>
+            <p>Bitta list (varaq) narxlari, printer rejimi, barcha buyurtmalar tarixi va admin parolini boshqarish markazi</p>
+          </div>
+          <div class="admin-banner-actions">
+            <span class="admin-user-pill">Admin: <strong id="adminCurrentUsernameLabel">admin</strong></span>
+            <button type="button" id="adminRefreshBtn" class="btn btn-secondary btn-sm">Ma'lumotlarni yangilash</button>
+          </div>
+        </div>
+
+        <!-- KPI Stats Grid -->
+        <div class="kpi-grid">
+          <div class="kpi-card">
+            <span class="kpi-label">Jami buyurtmalar</span>
+            <strong class="kpi-value" id="statTotalJobs">0</strong>
+            <span class="kpi-sub" id="statJobsToday">Bugun: 0 ta</span>
+          </div>
+          <div class="kpi-card">
+            <span class="kpi-label">Tanlangan jami betlar</span>
+            <strong class="kpi-value" id="statTotalPages">0</strong>
+            <span class="kpi-sub">Nusxalar bilan birga</span>
+          </div>
+          <div class="kpi-card">
+            <span class="kpi-label">Sarflangan qog'oz (list)</span>
+            <strong class="kpi-value" id="statTotalSheets">0</strong>
+            <span class="kpi-sub">Jismoniy varaqlar</span>
+          </div>
+          <div class="kpi-card kpi-card--accent">
+            <span class="kpi-label">Umumiy hisob (Tushum)</span>
+            <strong class="kpi-value" id="statTotalRevenue">0 so'm</strong>
+            <span class="kpi-sub">Barcha buyurtmalar bo'yicha</span>
+          </div>
+        </div>
+
+        <!-- Settings Grid: Pricing + Printer + Credentials -->
+        <div class="admin-settings-grid">
+          <!-- Card 1: 1-Sheet Pricing -->
+          <div class="panel-card">
+            <div class="card-head-block">
+              <h3>1 list (varaq) narxlari va vaqti</h3>
+              <p>Narxlar hamda 1 varaq chiqish vaqti (soniyada) o'quvchi sahifasida darhol amal qiladi.</p>
+            </div>
+            <div class="form-grid-2">
+              <div class="form-group">
+                <label class="form-label" for="priceBwSimplexInput">Oq-qora (1 tomonlama)</label>
+                <input id="priceBwSimplexInput" type="number" min="0" step="50" class="text-input" />
+              </div>
+              <div class="form-group">
+                <label class="form-label" for="priceBwDuplexInput">Oq-qora (2 tomonlama)</label>
+                <input id="priceBwDuplexInput" type="number" min="0" step="50" class="text-input" />
+              </div>
+              <div class="form-group">
+                <label class="form-label" for="priceColorSimplexInput">Rangli (1 tomonlama)</label>
+                <input id="priceColorSimplexInput" type="number" min="0" step="50" class="text-input" />
+              </div>
+              <div class="form-group">
+                <label class="form-label" for="priceColorDuplexInput">Rangli (2 tomonlama)</label>
+                <input id="priceColorDuplexInput" type="number" min="0" step="50" class="text-input" />
+              </div>
+              <div class="form-group">
+                <label class="form-label" for="secondsBwInput">Oq-qora 1 varaq vaqti (soniya)</label>
+                <input id="secondsBwInput" type="number" min="1" max="300" step="1" class="text-input" />
+              </div>
+              <div class="form-group">
+                <label class="form-label" for="secondsColorInput">Rangli 1 varaq vaqti (soniya)</label>
+                <input id="secondsColorInput" type="number" min="1" max="300" step="1" class="text-input" />
+              </div>
+            </div>
+            <button type="button" id="savePricingBtn" class="btn btn-primary full-width">
+              Narx va vaqtni saqlash
+            </button>
+          </div>
+
+          <!-- Card 2: Printer & Mode Settings -->
+          <div class="panel-card">
+            <div class="card-head-block">
+              <h3>Printer va Ishlash Rejimi</h3>
+              <p>Printerni ulaganingizdan so'ng rejimni shu yerdan Jonli holatga o'tkazishingiz mumkin.</p>
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="adminPrinterModeSelect">Chop etish rejimi</label>
+              <select id="adminPrinterModeSelect" class="select-input">
+                <option value="DRY_RUN">DRY_RUN — Test rejimi (Printer ulanmagan, faqat PDF tayyorlanadi)</option>
+                <option value="LINUX_CUPS">LINUX_CUPS — Raspberry Pi / Linux CUPS (To'g'ridan-to'g'ri printer)</option>
+                <option value="REMOTE_AGENT">REMOTE_AGENT — Bulut + Raspberry Pi ko'prigi (Uzoqdan chop etish)</option>
+                <option value="WINDOWS_SPOOLER">WINDOWS_SPOOLER — Windows Spooler (Mahalliy Windows printeri)</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="adminDefaultPrinterSelect">Asosiy printer (CUPS / Pi / Windows)</label>
+              <select id="adminDefaultPrinterSelect" class="select-input">
+                <option value="">Avtomatik (Standart printer)</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="adminAgentKeyInput">Raspberry Pi Agent kaliti (X-Agent-Key)</label>
+              <input id="adminAgentKeyInput" type="text" class="text-input" placeholder="Masalan: tlg-pi-secret-2026" autocomplete="off" />
+            </div>
+            <div id="piAgentStatusBox" class="agent-status-box"></div>
+            <div id="adminPrintersList" class="admin-printers-mini"></div>
+            <button type="button" id="savePrinterSettingsBtn" class="btn btn-primary full-width">
+              Printer sozlamalarini saqlash
+            </button>
+          </div>
+
+          <!-- Card 3: Admin Login & Password -->
+          <div class="panel-card">
+            <div class="card-head-block">
+              <h3>Admin Login va Parol</h3>
+              <p>Admin paneliga kirish ma'lumotlarini xavfsiz yangilang.</p>
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="newAdminUsername">Admin logini</label>
+              <input id="newAdminUsername" type="text" class="text-input" autocomplete="off" />
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="currentAdminPassword">Joriy parol</label>
+              <input id="currentAdminPassword" type="password" class="text-input" placeholder="Joriy parolni kiriting" />
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="newAdminPassword">Yangi parol (kamida 4 belgi)</label>
+              <input id="newAdminPassword" type="password" class="text-input" placeholder="Yangi parolni kiriting" />
+            </div>
+            <button type="button" id="saveCredentialsBtn" class="btn btn-secondary full-width">
+              Login va parolni yangilash
+            </button>
+          </div>
+        </div>
+
+        <!-- Card 4: Full Order History & Management -->
+        <div class="panel-card admin-history-card">
+          <div class="panel-header">
+            <div>
+              <h3>Barcha buyurtmalar tarixi va navbati</h3>
+              <p>O'quvchilar yuborgan barcha hujjatlar, tanlangan betlar, hisob-kitoblar va tayyor PDF fayllar</p>
+            </div>
+            <div class="history-toolbar">
+              <input
+                id="adminJobSearchInput"
+                type="search"
+                class="text-input search-input"
+                placeholder="Ism, fayl yoki ID bo'yicha qidirish..."
+              />
+              <select id="adminJobStatusFilter" class="select-input status-filter-select">
+                <option value="ALL">Barcha holatlar</option>
+                <option value="READY_IN_QUEUE">Navbatda / Test</option>
+                <option value="QUEUED_FOR_AGENT">Pi navbatida</option>
+                <option value="PRINTING_ON_PI">Raspberry Pi chop etmoqda</option>
+                <option value="SENT_TO_PRINTER">Printerga yuborilgan</option>
+                <option value="COMPLETED">Chop etilgan</option>
+                <option value="ERROR">Xatolik</option>
+                <option value="CANCELLED">Bekor qilingan</option>
+              </select>
+              <button type="button" id="adminClearJobsBtn" class="btn btn-danger-outline btn-sm">
+                Tarixni tozalash
+              </button>
+            </div>
+          </div>
+
+          <div id="adminJobsList" class="queue-list"></div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- Admin Login Modal -->
+  <div id="adminLoginModal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="adminLoginTitle">
+    <div class="modal-dialog modal-dialog--sm">
+      <div class="modal-header">
+        <h3 id="adminLoginTitle">Admin paneliga kirish</h3>
+        <button type="button" id="adminLoginCloseBtn" class="modal-close" aria-label="Yopish">&times;</button>
+      </div>
+      <form id="adminLoginForm" class="modal-body">
+        <div class="login-hint-banner">
+          Standart kirish: login <code>admin</code> • parol <code>admin123</code>
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="adminUsernameInput">Login</label>
+          <input
+            id="adminUsernameInput"
+            type="text"
+            class="text-input"
+            placeholder="admin"
+            autocomplete="username"
+            required
+          />
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="adminPasswordInput">Parol</label>
+          <div class="password-input-wrap">
+            <input
+              id="adminPasswordInput"
+              type="password"
+              class="text-input"
+              placeholder="Parolni kiriting"
+              autocomplete="current-password"
+              required
+            />
+            <button type="button" id="toggleLoginPwdBtn" class="pwd-eye-btn" aria-label="Parolni ko'rsatish">
+              Ko'rish
+            </button>
+          </div>
+        </div>
+        <p id="adminLoginError" class="login-error hidden"></p>
+        <button type="submit" id="adminLoginSubmitBtn" class="btn btn-primary full-width">
+          Tizimga kirish
+        </button>
+      </form>
+    </div>
+  </div>
+
+  <!-- Zoom Lightbox Modal -->
+  <div id="zoomModal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="zoomModalTitle">
+    <div class="modal-dialog modal-dialog--xl">
+      <div class="modal-header">
+        <div>
+          <h3 id="zoomModalTitle">1-bet ko'rinishi</h3>
+          <span id="zoomSelectionStatus" class="status-tag">Tanlangan</span>
+        </div>
+        <div class="modal-header-actions">
+          <button type="button" id="zoomToggleSelectBtn" class="btn btn-secondary btn-sm">Tanlash / Bekor qilish</button>
+          <button type="button" id="zoomRotateBtn" class="btn btn-secondary btn-sm">90° Aylantirish</button>
+          <button type="button" id="zoomCloseBtn" class="modal-close" aria-label="Yopish">&times;</button>
+        </div>
+      </div>
+      <div class="zoom-canvas-stage">
+        <button type="button" id="zoomPrevBtn" class="zoom-nav-btn" aria-label="Oldingi bet">&#8249;</button>
+        <div class="zoom-canvas-wrap">
+          <canvas id="zoomCanvas"></canvas>
+        </div>
+        <button type="button" id="zoomNextBtn" class="zoom-nav-btn" aria-label="Keyingi bet">&#8250;</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Job Result Modal -->
+  <div id="jobResultModal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="jobResultTitle">
+    <div class="modal-dialog modal-dialog--md">
+      <div class="modal-header">
+        <div class="result-title-wrap">
+          <div class="result-check-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+              <polyline points="20 6 9 17 4 12"></polyline>
+            </svg>
+          </div>
+          <h3 id="jobResultTitle">Chop etishga tayyorlandi!</h3>
+        </div>
+        <button type="button" id="jobModalCloseBtn" class="modal-close" aria-label="Yopish">&times;</button>
+      </div>
+      <div class="modal-body" id="jobResultBody"></div>
+      <div class="modal-footer">
+        <a id="jobResultPdfLink" href="#" target="_blank" rel="noopener" class="btn btn-primary">
+          Tayyorlangan PDF-ni ko'rish / Yuklab olish
+        </a>
+        <button type="button" id="jobDoneBtn" class="btn btn-ghost">Yopish</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast Notification -->
+  <div id="toastContainer" class="toast-container" aria-live="polite"></div>
+
+  <script src="/vendor/pdf.min.js"></script>
+  <script src="/js/api.js"></script>
+  <script src="/js/pageSelector.js"></script>
+  <script src="/js/pdfRenderer.js"></script>
+  <script src="/js/app.js"></script>
+</body>
+</html>

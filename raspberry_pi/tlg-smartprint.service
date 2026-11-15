@@ -1,0 +1,17 @@
+[Unit]
+Description=TLG SmartPrint Web Server + CUPS Print Controller (Raspberry Pi 5)
+After=network-online.target cups.service
+Wants=network-online.target cups.service
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/TLG_PRINTER
+Environment=TLG_PRINTER_MODE=LINUX_CUPS
+Environment=TLG_PORT=8000
+ExecStart=/home/pi/TLG_PRINTER/.venv/bin/python run.py
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

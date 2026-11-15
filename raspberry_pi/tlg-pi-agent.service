@@ -1,0 +1,19 @@
+[Unit]
+Description=TLG SmartPrint Raspberry Pi 5 Remote Print Agent
+After=network-online.target cups.service
+Wants=network-online.target cups.service
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/TLG_PRINTER
+Environment=TLG_SERVER_URL=https://YOUR-DOMAIN.example
+Environment=TLG_AGENT_KEY=tlg-pi-secret-2026
+Environment=TLG_PRINTER_NAME=
+Environment=TLG_POLL_INTERVAL=3
+ExecStart=/usr/bin/python3 /home/pi/TLG_PRINTER/raspberry_pi/pi_print_agent.py
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
