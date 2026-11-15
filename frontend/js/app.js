@@ -16,8 +16,6 @@
     orientation: "portrait",
     pagesPerSheet: 1,
     paperSize: "A4",
-    gridSize: "md",
-    showSelectedOnly: false,
     zoomPage: 1,
     pageCanvases: new Map(),
     pageCards: new Map(),
@@ -49,14 +47,9 @@
 
     selectionSummaryBadge: document.getElementById("selectionSummaryBadge"),
     btnSelectAll: document.getElementById("btnSelectAll"),
-    btnSelectOdd: document.getElementById("btnSelectOdd"),
-    btnSelectEven: document.getElementById("btnSelectEven"),
-    btnInvertSelection: document.getElementById("btnInvertSelection"),
-    btnToggleSelectedOnly: document.getElementById("btnToggleSelectedOnly"),
     btnClearSelection: document.getElementById("btnClearSelection"),
     pageRangeInput: document.getElementById("pageRangeInput"),
     rangeErrorMsg: document.getElementById("rangeErrorMsg"),
-    sizeButtons: document.querySelectorAll(".size-btn"),
     pagesGrid: document.getElementById("pagesGrid"),
 
     docFileTypeBadge: document.getElementById("docFileTypeBadge"),
@@ -64,8 +57,6 @@
     docMetaSubtext: document.getElementById("docMetaSubtext"),
     changeDocumentBtn: document.getElementById("changeDocumentBtn"),
 
-    scopeAllBtn: document.getElementById("scopeAllBtn"),
-    scopeCustomBtn: document.getElementById("scopeCustomBtn"),
     studentNameInput: document.getElementById("studentNameInput"),
     copiesMinusBtn: document.getElementById("copiesMinusBtn"),
     copiesPlusBtn: document.getElementById("copiesPlusBtn"),
@@ -321,8 +312,6 @@
     if (el.colorPagesInput) {
       el.colorPagesInput.value = "";
     }
-    state.showSelectedOnly = false;
-    el.btnToggleSelectedOnly.classList.remove("is-active");
     state.selectedPages = new Set(Array.from({ length: doc.page_count }, (_, i) => i + 1));
 
     el.docFileTypeBadge.textContent = (doc.file_type || "PDF").toUpperCase();
@@ -452,16 +441,11 @@
     state.pageCards.forEach((card, pageNum) => {
       const isSelected = state.selectedPages.has(pageNum);
       card.classList.toggle("is-selected", isSelected);
-      card.classList.toggle("hidden", state.showSelectedOnly && !isSelected);
       const pill = card.querySelector(".page-select-pill");
       if (pill) {
         pill.textContent = isSelected ? "✓ Tanlangan" : "O'tkaziladi";
       }
     });
-
-    const allSelected = count === total && total > 0;
-    el.scopeAllBtn.classList.toggle("is-active", allSelected);
-    el.scopeCustomBtn.classList.toggle("is-active", !allSelected);
 
     if (syncTextInput) {
       el.pageRangeInput.value = PageSelector.formatRange(sorted);
@@ -1180,59 +1164,9 @@
       syncSelectionUI({ syncTextInput: true });
     });
 
-    el.btnSelectOdd.addEventListener("click", () => {
-      if (!state.currentDoc) return;
-      state.selectedPages = new Set(
-        Array.from({ length: state.currentDoc.page_count }, (_, i) => i + 1).filter(
-          (p) => p % 2 === 1
-        )
-      );
-      syncSelectionUI({ syncTextInput: true });
-    });
-
-    el.btnSelectEven.addEventListener("click", () => {
-      if (!state.currentDoc) return;
-      state.selectedPages = new Set(
-        Array.from({ length: state.currentDoc.page_count }, (_, i) => i + 1).filter(
-          (p) => p % 2 === 0
-        )
-      );
-      syncSelectionUI({ syncTextInput: true });
-    });
-
-    el.btnInvertSelection.addEventListener("click", () => {
-      if (!state.currentDoc) return;
-      const next = new Set();
-      for (let p = 1; p <= state.currentDoc.page_count; p += 1) {
-        if (!state.selectedPages.has(p)) next.add(p);
-      }
-      state.selectedPages = next;
-      syncSelectionUI({ syncTextInput: true });
-    });
-
-    el.btnToggleSelectedOnly.addEventListener("click", () => {
-      state.showSelectedOnly = !state.showSelectedOnly;
-      el.btnToggleSelectedOnly.classList.toggle("is-active", state.showSelectedOnly);
-      syncSelectionUI({ syncTextInput: false });
-    });
-
     el.btnClearSelection.addEventListener("click", () => {
       state.selectedPages.clear();
       syncSelectionUI({ syncTextInput: true });
-    });
-
-    // Scope buttons
-    el.scopeAllBtn.addEventListener("click", () => {
-      if (!state.currentDoc) return;
-      state.selectedPages = new Set(
-        Array.from({ length: state.currentDoc.page_count }, (_, i) => i + 1)
-      );
-      syncSelectionUI({ syncTextInput: true });
-    });
-    el.scopeCustomBtn.addEventListener("click", () => {
-      el.scopeAllBtn.classList.remove("is-active");
-      el.scopeCustomBtn.classList.add("is-active");
-      el.pageRangeInput.focus();
     });
 
     // Range text input live sync
@@ -1252,16 +1186,6 @@
         el.rangeErrorMsg.textContent = err.message;
         el.rangeErrorMsg.classList.remove("hidden");
       }
-    });
-
-    // Grid size buttons
-    el.sizeButtons.forEach((btn) => {
-      btn.addEventListener("click", () => {
-        el.sizeButtons.forEach((b) => b.classList.remove("is-active"));
-        btn.classList.add("is-active");
-        el.pagesGrid.classList.remove("size-sm", "size-md", "size-lg");
-        el.pagesGrid.classList.add(`size-${btn.dataset.size}`);
-      });
     });
 
     // Copies stepper

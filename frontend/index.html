@@ -22,9 +22,8 @@
           <div>
             <div class="brand-title-row">
               <h1 class="brand-title">TLG SmartPrint</h1>
-              <span class="version-pill">v1.1</span>
             </div>
-            <p class="brand-subtitle">O'quvchilar uchun hujjat yuklash, bet tanlash va avtomatlashtirilgan chop etish portali</p>
+            <p class="brand-subtitle">Hujjat yuklash, bet tanlash va tezkor chop etish portali</p>
           </div>
         </div>
 
@@ -145,25 +144,14 @@
           <div class="studio-main">
             <!-- Selection Toolbar -->
             <div class="selection-toolbar">
-              <div class="toolbar-top-row">
+              <div class="toolbar-row">
                 <div class="selection-counter-pill">
                   <span class="counter-dot"></span>
                   <span id="selectionSummaryBadge">0 ta betdan 0 tasi tanlandi</span>
                 </div>
 
-                <div class="quick-select-group" role="group" aria-label="Tezkor bet tanlash">
-                  <button type="button" class="chip-btn" id="btnSelectAll">Barchasi</button>
-                  <button type="button" class="chip-btn" id="btnSelectOdd">Toq betlar</button>
-                  <button type="button" class="chip-btn" id="btnSelectEven">Juft betlar</button>
-                  <button type="button" class="chip-btn" id="btnInvertSelection">Teskari</button>
-                  <button type="button" class="chip-btn" id="btnToggleSelectedOnly" title="Faqat tanlangan betlarni ko'rish">Faqat tanlanganlar</button>
-                  <button type="button" class="chip-btn chip-btn--danger" id="btnClearSelection">Tozalash (0)</button>
-                </div>
-              </div>
-
-              <div class="toolbar-bottom-row">
                 <div class="range-input-wrap">
-                  <label for="pageRangeInput">Betlar oralig'i:</label>
+                  <label for="pageRangeInput">Betlar:</label>
                   <input
                     id="pageRangeInput"
                     type="text"
@@ -174,11 +162,9 @@
                   <span id="rangeErrorMsg" class="range-error hidden"></span>
                 </div>
 
-                <div class="grid-size-group" role="group" aria-label="Sahifa ko'rinish o'lchami">
-                  <span class="size-label">Ko'rinish:</span>
-                  <button type="button" class="size-btn" data-size="sm">Kichik</button>
-                  <button type="button" class="size-btn is-active" data-size="md">O'rta</button>
-                  <button type="button" class="size-btn" data-size="lg">Katta</button>
+                <div class="quick-select-group" role="group" aria-label="Bet tanlash amallari">
+                  <button type="button" class="chip-btn" id="btnSelectAll">Barchasi</button>
+                  <button type="button" class="chip-btn chip-btn--danger" id="btnClearSelection">Tozalash</button>
                 </div>
               </div>
             </div>
@@ -209,19 +195,6 @@
             <div class="settings-card">
               <h3 class="settings-title">Chop etish sozlamalari</h3>
 
-              <!-- Print Mode Scope -->
-              <div class="form-group">
-                <label class="form-label">Qaysi betlar chiqarilsin?</label>
-                <div class="segmented-control">
-                  <button type="button" class="seg-btn is-active" id="scopeAllBtn" data-scope="all">
-                    Barchasi
-                  </button>
-                  <button type="button" class="seg-btn" id="scopeCustomBtn" data-scope="custom">
-                    Kerakli betlar
-                  </button>
-                </div>
-              </div>
-
               <!-- Student Name / Group -->
               <div class="form-group">
                 <label class="form-label" for="studentNameInput">O'quvchi ismi / Guruhi</label>
@@ -246,7 +219,7 @@
 
               <!-- Color Mode -->
               <div class="form-group">
-                <label class="form-label">Rang rejimi <span class="hint-tag">(Jonli ko'rinish)</span></label>
+                <label class="form-label">Rang rejimi</label>
                 <div class="segmented-control">
                   <button type="button" class="seg-btn is-active" data-color="bw" id="colorBwBtn">
                     Oq-qora
@@ -278,46 +251,55 @@
                 </div>
               </div>
 
-              <!-- Orientation -->
-              <div class="form-group">
-                <label class="form-label">Sahifa yo'nalishi</label>
-                <div class="segmented-control">
-                  <button type="button" class="seg-btn is-active" data-orientation="portrait" id="orientPortraitBtn">
-                    Kitob (Vertikal)
-                  </button>
-                  <button type="button" class="seg-btn" data-orientation="landscape" id="orientLandscapeBtn">
-                    Albom (Gorizontal)
-                  </button>
-                </div>
-              </div>
+              <!-- Secondary Settings Collapsible -->
+              <details class="advanced-options">
+                <summary class="advanced-summary">
+                  <span>Qo'shimcha sozlamalar (Yo'nalish, Varaq, Printer)</span>
+                  <span class="advanced-chevron" aria-hidden="true">▾</span>
+                </summary>
+                <div class="advanced-body">
+                  <!-- Orientation -->
+                  <div class="form-group">
+                    <label class="form-label">Sahifa yo'nalishi</label>
+                    <div class="segmented-control">
+                      <button type="button" class="seg-btn is-active" data-orientation="portrait" id="orientPortraitBtn">
+                        Kitob (Vertikal)
+                      </button>
+                      <button type="button" class="seg-btn" data-orientation="landscape" id="orientLandscapeBtn">
+                        Albom (Gorizontal)
+                      </button>
+                    </div>
+                  </div>
 
-              <!-- Pages per sheet & Paper size -->
-              <div class="form-grid-2">
-                <div class="form-group">
-                  <label class="form-label" for="pagesPerSheetSelect">1 varaqda</label>
-                  <select id="pagesPerSheetSelect" class="select-input">
-                    <option value="1" selected>1 bet</option>
-                    <option value="2">2 bet</option>
-                    <option value="4">4 bet</option>
-                  </select>
-                </div>
-                <div class="form-group">
-                  <label class="form-label" for="paperSizeSelect">Qog'oz</label>
-                  <select id="paperSizeSelect" class="select-input">
-                    <option value="A4" selected>A4</option>
-                    <option value="A5">A5</option>
-                    <option value="Letter">Letter</option>
-                  </select>
-                </div>
-              </div>
+                  <!-- Pages per sheet & Paper size -->
+                  <div class="form-grid-2">
+                    <div class="form-group">
+                      <label class="form-label" for="pagesPerSheetSelect">1 varaqda</label>
+                      <select id="pagesPerSheetSelect" class="select-input">
+                        <option value="1" selected>1 bet</option>
+                        <option value="2">2 bet</option>
+                        <option value="4">4 bet</option>
+                      </select>
+                    </div>
+                    <div class="form-group">
+                      <label class="form-label" for="paperSizeSelect">Qog'oz</label>
+                      <select id="paperSizeSelect" class="select-input">
+                        <option value="A4" selected>A4</option>
+                        <option value="A5">A5</option>
+                        <option value="Letter">Letter</option>
+                      </select>
+                    </div>
+                  </div>
 
-              <!-- Printer Target -->
-              <div class="form-group">
-                <label class="form-label" for="printerSelect">Maqsadli printer</label>
-                <select id="printerSelect" class="select-input">
-                  <option value="">Avtomatik (Keyin ulanadi)</option>
-                </select>
-              </div>
+                  <!-- Printer Target -->
+                  <div class="form-group">
+                    <label class="form-label" for="printerSelect">Maqsadli printer</label>
+                    <select id="printerSelect" class="select-input">
+                      <option value="">Avtomatik (Keyin ulanadi)</option>
+                    </select>
+                  </div>
+                </div>
+              </details>
 
               <!-- Live Summary Box -->
               <div class="summary-box">
