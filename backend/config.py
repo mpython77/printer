@@ -39,8 +39,12 @@ WARMUP_SECONDS = 5
 
 ALLOWED_EXTENSIONS = {
     ".pdf",
+    ".doc",
     ".docx",
+    ".ppt",
     ".pptx",
+    ".xlsx",
+    ".xls",
     ".png",
     ".jpg",
     ".jpeg",

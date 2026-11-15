@@ -171,9 +171,9 @@ def _convert_image(input_path: Path, output_pdf_path: Path) -> int:
         else:
             rgb = oriented.convert("RGB")
 
-        # Fit onto crisp A4 canvas (150 DPI -> 1240 x 1754 px)
-        a4_w, a4_h = 1240, 1754
-        margin = 60
+        # Fit onto crisp 300 DPI A4 canvas matching the image's natural orientation
+        a4_w, a4_h = (3508, 2480) if rgb.width > rgb.height else (2480, 3508)
+        margin = 72
         max_w, max_h = a4_w - 2 * margin, a4_h - 2 * margin
         scale = min(max_w / rgb.width, max_h / rgb.height)
         new_w = max(1, int(rgb.width * scale))
@@ -184,7 +184,7 @@ def _convert_image(input_path: Path, output_pdf_path: Path) -> int:
         offset_x = (a4_w - new_w) // 2
         offset_y = (a4_h - new_h) // 2
         canvas.paste(resized, (offset_x, offset_y))
-        canvas.save(str(output_pdf_path), "PDF", resolution=150.0)
+        canvas.save(str(output_pdf_path), "PDF", resolution=300.0)
     return 1
 
 
@@ -223,24 +223,50 @@ def _make_rl_image(blob: bytes, max_w: float, max_h: float) -> RLImage | None:
         return None
 
 
+def _dispatch_com_app(prog_id: str):
+    """Instantiate a COM application via DispatchEx, self-healing corrupted pywin32 gen_py cache if needed."""
+    import win32com.client
+
+    try:
+        return win32com.client.DispatchEx(prog_id)
+    except AttributeError as exc:
+        msg = str(exc)
+        if "CLSIDTo" not in msg and "gen_py" not in msg:
+            raise
+        from win32com.client import gencache
+
+        gen_dir = Path(gencache.GetGeneratePath())
+        if gen_dir.exists():
+            for child in gen_dir.iterdir():
+                if child.is_dir():
+                    shutil.rmtree(child, ignore_errors=True)
+        for mod_name in [m for m in list(sys.modules) if m.startswith("win32com.gen_py.")]:
+            sys.modules.pop(mod_name, None)
+        try:
+            gencache.Rebuild()
+        except Exception:
+            pass
+        return win32com.client.DispatchEx(prog_id)
+
+
 def _convert_office_via_com(input_path: Path, output_pdf_path: Path, kind: str) -> int | None:
-    """Convert .docx/.pptx to 1:1 PDF via Windows COM automation (WPS Office / MS Office)."""
+    """Convert .doc/.docx/.ppt/.pptx/.xls/.xlsx to 1:1 PDF via Windows COM automation (WPS / MS Office)."""
     if sys.platform != "win32":
         return None
     try:
         import pythoncom
-        import win32com.client
     except Exception:
         return None
 
     src_path = str(input_path.resolve())
     dst_path = str(output_pdf_path.resolve())
     output_pdf_path.parent.mkdir(parents=True, exist_ok=True)
-    prog_ids = (
-        ("KWPS.Application", "Word.Application")
-        if kind == "docx"
-        else ("KWPP.Application", "PowerPoint.Application")
-    )
+    if kind == "docx":
+        prog_ids = ("KWPS.Application", "Word.Application")
+    elif kind == "pptx":
+        prog_ids = ("KWPP.Application", "PowerPoint.Application")
+    else:
+        prog_ids = ("KET.Application", "Excel.Application")
 
     with _OFFICE_COM_LOCK:
         pythoncom.CoInitialize()
@@ -254,9 +280,9 @@ def _convert_office_via_com(input_path: Path, output_pdf_path: Path, kind: str) 
                 except OSError:
                     pass
                 try:
-                    app = win32com.client.DispatchEx(prog_id)
+                    app = _dispatch_com_app(prog_id)
                     try:
-                        app.DisplayAlerts = 0
+                        app.DisplayAlerts = False if kind == "xlsx" else 0
                     except Exception:
                         pass
                     if kind == "docx":
@@ -269,17 +295,29 @@ def _convert_office_via_com(input_path: Path, output_pdf_path: Path, kind: str) 
                             doc_obj.ExportAsFixedFormat(dst_path, 17)
                         except Exception:
                             doc_obj.SaveAs(dst_path, 17)
-                    else:
+                    elif kind == "pptx":
                         doc_obj = app.Presentations.Open(
                             src_path, ReadOnly=1, Untitled=0, WithWindow=0
                         )
                         doc_obj.SaveAs(dst_path, 32)
+                    else:
+                        try:
+                            app.Visible = False
+                        except Exception:
+                            pass
+                        doc_obj = app.Workbooks.Open(src_path, ReadOnly=True)
+                        doc_obj.ExportAsFixedFormat(0, dst_path)
                 except Exception:
                     continue
                 finally:
                     if doc_obj is not None:
                         try:
-                            doc_obj.Close(0) if kind == "docx" else doc_obj.Close()
+                            if kind == "docx":
+                                doc_obj.Close(0)
+                            elif kind == "xlsx":
+                                doc_obj.Close(False)
+                            else:
+                                doc_obj.Close()
                         except Exception:
                             pass
                     if app is not None:
@@ -359,6 +397,8 @@ def _convert_docx(input_path: Path, output_pdf_path: Path) -> int:
     lo_pages = _convert_office_via_libreoffice(input_path, output_pdf_path)
     if lo_pages:
         return lo_pages
+    if input_path.suffix.lower() == ".doc":
+        raise ValueError("Eski .doc formatini PDF ga aylantirish uchun Office yoki LibreOffice kerak.")
 
     styles = _build_styles()
     doc = DocxDocument(str(input_path))
@@ -457,6 +497,8 @@ def _convert_pptx(input_path: Path, output_pdf_path: Path) -> int:
     lo_pages = _convert_office_via_libreoffice(input_path, output_pdf_path)
     if lo_pages:
         return lo_pages
+    if input_path.suffix.lower() == ".ppt":
+        raise ValueError("Eski .ppt formatini PDF ga aylantirish uchun Office yoki LibreOffice kerak.")
 
     styles = _build_styles()
     prs = Presentation(str(input_path))
@@ -558,6 +600,83 @@ def _convert_pptx(input_path: Path, output_pdf_path: Path) -> int:
     return len(PdfReader(str(output_pdf_path)).pages)
 
 
+def _convert_excel(input_path: Path, output_pdf_path: Path) -> int:
+    com_pages = _convert_office_via_com(input_path, output_pdf_path, "xlsx")
+    if com_pages:
+        return com_pages
+    lo_pages = _convert_office_via_libreoffice(input_path, output_pdf_path)
+    if lo_pages:
+        return lo_pages
+
+    try:
+        import openpyxl
+    except ImportError as exc:
+        raise ValueError(
+            "Excel (.xlsx/.xls) faylini PDF ga aylantirish uchun Office yoki LibreOffice kerak."
+        ) from exc
+
+    if input_path.suffix.lower() == ".xls":
+        raise ValueError("Eski .xls formatini PDF ga aylantirish uchun Office yoki LibreOffice kerak.")
+
+    styles = _build_styles()
+    wb = openpyxl.load_workbook(str(input_path), data_only=True, read_only=True)
+    story = []
+    max_cols = 0
+    try:
+        for sheet_idx, ws in enumerate(wb.worksheets):
+            rows_data = []
+            for row in ws.iter_rows(values_only=True):
+                if not any(cell is not None and str(cell).strip() != "" for cell in row):
+                    continue
+                row_strs = ["" if cell is None else str(cell) for cell in row]
+                while row_strs and row_strs[-1] == "":
+                    row_strs.pop()
+                if row_strs:
+                    max_cols = max(max_cols, len(row_strs))
+                    rows_data.append(
+                        [Paragraph(escape(c or " "), styles["body"]) for c in row_strs]
+                    )
+            if not rows_data:
+                continue
+            if sheet_idx > 0 and story:
+                story.append(PageBreak())
+            story.append(Paragraph(f"Varoq: {escape(ws.title)}", styles["h2"]))
+            col_count = max(len(r) for r in rows_data)
+            for r in rows_data:
+                while len(r) < col_count:
+                    r.append(Paragraph(" ", styles["body"]))
+            table = Table(rows_data, repeatRows=1)
+            table.setStyle(
+                TableStyle(
+                    [
+                        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#cbd5e1")),
+                        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#eef2ff")),
+                        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                        ("PADDING", (0, 0), (-1, -1), 4),
+                    ]
+                )
+            )
+            story.append(Spacer(1, 4))
+            story.append(table)
+    finally:
+        wb.close()
+
+    if not story:
+        story.append(Paragraph("Bo'sh Excel jadvali", styles["body"]))
+
+    pagesize = landscape(A4) if max_cols > 5 else A4
+    pdf_doc = SimpleDocTemplate(
+        str(output_pdf_path),
+        pagesize=pagesize,
+        leftMargin=14 * mm,
+        rightMargin=14 * mm,
+        topMargin=14 * mm,
+        bottomMargin=14 * mm,
+    )
+    pdf_doc.build(story)
+    return len(PdfReader(str(output_pdf_path)).pages)
+
+
 def _convert_text(input_path: Path, output_pdf_path: Path) -> int:
     styles = _build_styles()
     raw = input_path.read_text(encoding="utf-8", errors="replace")
@@ -590,10 +709,12 @@ def normalize_to_pdf(input_path: Path, original_filename: str, output_pdf_path: 
         return _convert_pdf(input_path, output_pdf_path)
     if ext in {".png", ".jpg", ".jpeg", ".webp", ".bmp"}:
         return _convert_image(input_path, output_pdf_path)
-    if ext == ".docx":
+    if ext in {".docx", ".doc"}:
         return _convert_docx(input_path, output_pdf_path)
-    if ext == ".pptx":
+    if ext in {".pptx", ".ppt"}:
         return _convert_pptx(input_path, output_pdf_path)
+    if ext in {".xlsx", ".xls"}:
+        return _convert_excel(input_path, output_pdf_path)
     if ext in {".txt", ".md", ".csv"}:
         return _convert_text(input_path, output_pdf_path)
 

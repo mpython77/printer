@@ -594,7 +594,6 @@ def _print_single_pdf_gdi(
     try:
         printable_w = max(1, dc.GetDeviceCaps(win32con.HORZRES))
         printable_h = max(1, dc.GetDeviceCaps(win32con.VERTRES))
-        render_scale = 300.0 / 72.0
         is_bw = str(color_mode).strip().lower() == "bw"
         total_copies = max(1, int(copies or 1))
 
@@ -605,7 +604,20 @@ def _print_single_pdf_gdi(
         for _ in range(total_copies):
             for page_idx in range(page_count):
                 page = pdf_doc[page_idx]
-                bitmap = page.render(scale=render_scale)
+                page_w_pt, page_h_pt = page.get_size()
+                needs_rot = (page_w_pt > page_h_pt and printable_h > printable_w) or (
+                    page_h_pt > page_w_pt and printable_w > printable_h
+                )
+                eff_w_pt, eff_h_pt = (page_h_pt, page_w_pt) if needs_rot else (page_w_pt, page_h_pt)
+                render_scale = max(
+                    1.0,
+                    min(
+                        printable_w / max(1.0, float(eff_w_pt)),
+                        printable_h / max(1.0, float(eff_h_pt)),
+                        600.0 / 72.0,
+                    ),
+                )
+                bitmap = page.render(scale=render_scale, rotation=90 if needs_rot else 0)
                 pil_img = bitmap.to_pil()
                 if is_bw:
                     pil_img = pil_img.convert("L").convert("RGB")
@@ -613,11 +625,6 @@ def _print_single_pdf_gdi(
                     pil_img = pil_img.convert("RGB")
 
                 img_w, img_h = pil_img.size
-                if (img_w > img_h and printable_h > printable_w) or (
-                    img_h > img_w and printable_w > printable_h
-                ):
-                    pil_img = pil_img.rotate(90, expand=True)
-                    img_w, img_h = pil_img.size
                 fit_scale = min(printable_w / max(1, img_w), printable_h / max(1, img_h))
                 draw_w = max(1, int(img_w * fit_scale))
                 draw_h = max(1, int(img_h * fit_scale))

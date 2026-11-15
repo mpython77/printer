@@ -81,6 +81,19 @@ def format_page_range(pages: list[int]) -> str:
     return ", ".join(ranges)
 
 
+def _is_page_landscape(page: PageObject) -> bool:
+    """Return True if a PDF page's visual dimensions (accounting for /Rotate) are wider than tall."""
+    try:
+        rot = int(page.get("/Rotate", 0) or 0) % 360
+    except Exception:
+        rot = 0
+    w = float(page.mediabox.width)
+    h = float(page.mediabox.height)
+    if rot in {90, 270}:
+        w, h = h, w
+    return w > h
+
+
 def _place_page_in_cell(
     dest_page: PageObject,
     src_page: PageObject,
@@ -111,7 +124,7 @@ def _place_page_in_cell(
 
 
 def _rewrite_content_stream_to_gray(content_obj: Any, pdf_owner: PdfWriter) -> ContentStream:
-    """Convert RGB PDF drawing operators (`rg`, `RG`) inside a stream into luminance `DeviceGray` (`g`, `G`)."""
+    """Convert RGB (`rg`, `RG`) and CMYK (`k`, `K`) PDF color operators into `DeviceGray` (`g`, `G`)."""
     cs = ContentStream(content_obj, pdf_owner)
     new_ops = []
     for operands, operator in cs.operations:
@@ -126,6 +139,21 @@ def _rewrite_content_stream_to_gray(content_obj: Any, pdf_owner: PdfWriter) -> C
                 continue
             except Exception:
                 pass
+        elif operator in {b"k", b"K"} and len(operands) == 4:
+            try:
+                c = float(operands[0])
+                m = float(operands[1])
+                y = float(operands[2])
+                k = float(operands[3])
+                r = (1.0 - c) * (1.0 - k)
+                g = (1.0 - m) * (1.0 - k)
+                b = (1.0 - y) * (1.0 - k)
+                lum = round(max(0.0, min(1.0, 0.299 * r + 0.587 * g + 0.114 * b)), 4)
+                new_op = b"g" if operator == b"k" else b"G"
+                new_ops.append(([FloatObject(lum)], new_op))
+                continue
+            except Exception:
+                pass
         new_ops.append((operands, operator))
     cs.operations = new_ops
     return cs
@@ -136,7 +164,7 @@ def _convert_page_streams_to_grayscale(
     pdf_owner: PdfWriter,
     _visited: set[int] | None = None,
 ) -> None:
-    """Safely convert RGB vector operators, embedded Form XObjects, and raster images to grayscale."""
+    """Safely convert vector color operators, embedded Form XObjects, and raster images to grayscale."""
     seen = _visited if _visited is not None else set()
     try:
         contents = page.get_contents()
@@ -149,10 +177,30 @@ def _convert_page_streams_to_grayscale(
     try:
         for img_file in list(getattr(page, "images", [])):
             try:
+                img_obj = (
+                    img_file.indirect_reference.get_object()
+                    if getattr(img_file, "indirect_reference", None) is not None
+                    else None
+                )
+                has_smask = img_obj is not None and "/SMask" in img_obj
                 with Image.open(io.BytesIO(img_file.data)) as pil_img:
-                    if pil_img.mode not in {"1", "L"}:
+                    has_alpha = (
+                        "A" in pil_img.getbands()
+                        or pil_img.mode in {"RGBA", "LA", "PA"}
+                        or (pil_img.mode == "P" and "transparency" in pil_img.info)
+                    )
+                    if has_alpha:
+                        rgba = pil_img.convert("RGBA")
+                        alpha = rgba.getchannel("A")
+                        gray = rgba.convert("L")
+                        merged = Image.merge("RGBA", (gray, gray, gray, alpha))
+                        img_file.replace(merged)
+                    elif has_smask:
+                        # Keep external /SMask intact when pypdf did not merge alpha into img_file.data
+                        continue
+                    elif pil_img.mode not in {"1", "L"}:
                         gray_img = pil_img.convert("L")
-                        img_file.replace(gray_img, quality=90)
+                        img_file.replace(gray_img, quality=92)
             except Exception:
                 continue
     except Exception:
@@ -323,6 +371,22 @@ def slice_pdf_for_print(
     pps = pages_per_sheet if pages_per_sheet in {1, 2, 4} else 1
     base_w, base_h = PAPER_DIMENSIONS_PT.get(paper_size, PAPER_DIMENSIONS_PT["A4"])
 
+    plan = compute_sheet_color_plan(
+        selected_pages=valid_selected,
+        color_mode=color_mode,
+        color_pages=color_pages,
+        duplex=duplex,
+        pages_per_sheet=pps,
+    )
+
+    mode_norm = (color_mode or "bw").strip().lower()
+    if mode_norm in {"bw", "mixed"}:
+        face_modes = plan["face_modes"]
+        for src_idx, src_page in enumerate(extracted_pages):
+            face_idx = src_idx // pps
+            if face_idx < len(face_modes) and face_modes[face_idx] == "bw":
+                _convert_page_streams_to_grayscale(src_page, temp_writer)
+
     final_writer = PdfWriter()
 
     if pps == 1 and orientation == "portrait":
@@ -335,10 +399,14 @@ def slice_pdf_for_print(
             _place_page_in_cell(blank, src, 0.0, 0.0, sheet_w, sheet_h, padding=8.0)
             final_writer.add_page(blank)
     elif pps == 2:
-        sheet_w, sheet_h = (base_h, base_w) if orientation == "portrait" else (base_w, base_h)
         for idx in range(0, len(extracted_pages), 2):
-            blank = PageObject.create_blank_page(width=sheet_w, height=sheet_h)
             chunk = extracted_pages[idx : idx + 2]
+            src_is_land = _is_page_landscape(chunk[0])
+            if src_is_land:
+                sheet_w, sheet_h = (base_w, base_h) if orientation == "portrait" else (base_h, base_w)
+            else:
+                sheet_w, sheet_h = (base_h, base_w) if orientation == "portrait" else (base_w, base_h)
+            blank = PageObject.create_blank_page(width=sheet_w, height=sheet_h)
             if sheet_w >= sheet_h:
                 half_w = sheet_w / 2.0
                 _place_page_in_cell(blank, chunk[0], 0.0, 0.0, half_w, sheet_h)
@@ -351,37 +419,27 @@ def slice_pdf_for_print(
                     _place_page_in_cell(blank, chunk[1], 0.0, 0.0, sheet_w, half_h)
             final_writer.add_page(blank)
     else:
-        sheet_w, sheet_h = (base_h, base_w) if orientation == "landscape" else (base_w, base_h)
-        half_w = sheet_w / 2.0
-        half_h = sheet_h / 2.0
-        slots = [
-            (0.0, half_h),
-            (half_w, half_h),
-            (0.0, 0.0),
-            (half_w, 0.0),
-        ]
         for idx in range(0, len(extracted_pages), 4):
-            blank = PageObject.create_blank_page(width=sheet_w, height=sheet_h)
             chunk = extracted_pages[idx : idx + 4]
+            src_is_land = _is_page_landscape(chunk[0])
+            sheet_w, sheet_h = (
+                (base_h, base_w)
+                if (orientation == "landscape" or (orientation == "portrait" and src_is_land))
+                else (base_w, base_h)
+            )
+            half_w = sheet_w / 2.0
+            half_h = sheet_h / 2.0
+            slots = [
+                (0.0, half_h),
+                (half_w, half_h),
+                (0.0, 0.0),
+                (half_w, 0.0),
+            ]
+            blank = PageObject.create_blank_page(width=sheet_w, height=sheet_h)
             for pos, src in enumerate(chunk):
                 cx, cy = slots[pos]
                 _place_page_in_cell(blank, src, cx, cy, half_w, half_h)
             final_writer.add_page(blank)
-
-    plan = compute_sheet_color_plan(
-        selected_pages=valid_selected,
-        color_mode=color_mode,
-        color_pages=color_pages,
-        duplex=duplex,
-        pages_per_sheet=pps,
-    )
-
-    mode_norm = (color_mode or "bw").strip().lower()
-    if mode_norm in {"bw", "mixed"}:
-        face_modes = plan["face_modes"]
-        for face_idx, out_page in enumerate(final_writer.pages):
-            if face_idx < len(face_modes) and face_modes[face_idx] == "bw":
-                _convert_page_streams_to_grayscale(out_page, final_writer)
 
     with open(output_pdf_path, "wb") as f:
         final_writer.write(f)

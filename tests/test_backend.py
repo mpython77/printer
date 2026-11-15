@@ -134,6 +134,111 @@ class ConverterAndSlicerTests(unittest.TestCase):
             pptx_out = tmp_dir / "slides.pdf"
             self.assertEqual(normalize_to_pdf(pptx_in, "slides.pptx", pptx_out), 1)
 
+            # XLSX -> PDF
+            import openpyxl
+
+            xlsx_in = tmp_dir / "table.xlsx"
+            wb = openpyxl.Workbook()
+            ws = wb.active
+            ws.title = "Natijalar"
+            ws.append(["Talaba", "Baho"])
+            ws.append(["Doston", 98])
+            wb.save(xlsx_in)
+            xlsx_out = tmp_dir / "table.pdf"
+            self.assertGreaterEqual(normalize_to_pdf(xlsx_in, "table.xlsx", xlsx_out), 1)
+
+    def test_bw_grayscale_preserves_transparent_smask_and_cmyk(self) -> None:
+        import numpy as np
+        import pypdfium2 as pdfium
+        from reportlab.lib.colors import CMYKColor
+        from reportlab.pdfgen import canvas as rl_canvas
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_dir = Path(tmp)
+            overlay_png = tmp_dir / "watermark.png"
+            rgba = Image.new("RGBA", (200, 200), (0, 0, 0, 0))
+            for x in range(60, 140):
+                for y in range(60, 140):
+                    rgba.putpixel((x, y), (30, 80, 220, 180))
+            rgba.save(overlay_png)
+
+            src_pdf = tmp_dir / "transparent_src.pdf"
+            c = rl_canvas.Canvas(str(src_pdf), pagesize=(400, 400))
+            c.setFillColor(CMYKColor(0.8, 0.2, 0.0, 0.1))
+            c.rect(20, 20, 100, 40, fill=1, stroke=0)
+            c.drawImage(str(overlay_png), 150, 150, width=200, height=200, mask="auto")
+            c.save()
+
+            bw_pdf = tmp_dir / "bw_sliced.pdf"
+            slice_pdf_for_print(
+                source_pdf_path=src_pdf,
+                output_pdf_path=bw_pdf,
+                selected_pages=[1],
+                color_mode="bw",
+            )
+
+            doc = pdfium.PdfDocument(str(bw_pdf))
+            try:
+                bmp = doc[0].render(scale=1.0)
+                pil = bmp.to_pil().convert("RGB")
+                arr = np.asarray(pil)
+            finally:
+                doc.close()
+
+            max_chroma = int((arr.max(axis=2) - arr.min(axis=2)).max())
+            self.assertEqual(max_chroma, 0)
+            # Outer transparent region around the centered watermark must remain pure white, never solid black
+            corner_brightness = float(arr[160:180, 160:180].mean())
+            self.assertGreater(corner_brightness, 240.0)
+            # CMYK rectangle must become grayscale shade, not disappear or stay chromatic
+            cmyk_patch = float(arr[355:365, 40:80].mean())
+            self.assertLess(cmyk_patch, 200.0)
+
+    def test_landscape_image_and_nup_imposition(self) -> None:
+        from reportlab.pdfgen import canvas as rl_canvas
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_dir = Path(tmp)
+            land_img = tmp_dir / "certificate_wide.png"
+            Image.new("RGB", (1200, 700), color=(240, 230, 200)).save(land_img)
+            land_pdf = tmp_dir / "certificate_wide.pdf"
+            self.assertEqual(normalize_to_pdf(land_img, "certificate_wide.png", land_pdf), 1)
+            box = PdfReader(str(land_pdf)).pages[0].mediabox
+            self.assertGreater(float(box.width), float(box.height))
+
+            slides_pdf = tmp_dir / "landscape_slides.pdf"
+            c = rl_canvas.Canvas(str(slides_pdf), pagesize=(960, 540))
+            for i in range(4):
+                c.drawString(40, 270, f"Landscape slide {i + 1}")
+                c.showPage()
+            c.save()
+
+            out_2up = tmp_dir / "out_2up.pdf"
+            slice_pdf_for_print(
+                source_pdf_path=slides_pdf,
+                output_pdf_path=out_2up,
+                selected_pages=[1, 2],
+                pages_per_sheet=2,
+                orientation="portrait",
+                color_mode="bw",
+            )
+            box_2up = PdfReader(str(out_2up)).pages[0].mediabox
+            # 2 landscape slides stacked top-and-bottom fit best on a portrait A4 sheet
+            self.assertLess(float(box_2up.width), float(box_2up.height))
+
+            out_4up = tmp_dir / "out_4up.pdf"
+            slice_pdf_for_print(
+                source_pdf_path=slides_pdf,
+                output_pdf_path=out_4up,
+                selected_pages=[1, 2, 3, 4],
+                pages_per_sheet=4,
+                orientation="portrait",
+                color_mode="color",
+            )
+            box_4up = PdfReader(str(out_4up)).pages[0].mediabox
+            # 4 landscape slides fit best in 4 quadrants of a landscape A4 sheet
+            self.assertGreater(float(box_4up.width), float(box_4up.height))
+
 
 class ApiIntegrationTests(unittest.TestCase):
     def setUp(self) -> None:

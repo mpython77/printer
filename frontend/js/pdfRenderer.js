@@ -39,6 +39,9 @@ window.PdfRenderer = (() => {
 
     canvas.width = Math.floor(viewport.width);
     canvas.height = Math.floor(viewport.height);
+    if (fitContainer && canvas.parentElement) {
+      canvas.parentElement.classList.toggle("is-landscape", rotatedBase.width > rotatedBase.height);
+    }
     if (fitContainer) {
       canvas.style.width = "";
       canvas.style.height = "";
