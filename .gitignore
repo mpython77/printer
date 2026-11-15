@@ -6,6 +6,21 @@ __pycache__/
 venv/
 ENV/
 
+# Environment & secrets
+.env
+.env.*
+!.env.example
+*.log
+*.key
+*.pem
+*.pfx
+*.p12
+*.secret
+secrets.*
+telegram_session_string.txt
+telegram_auth_state.json
+humo_bot_analysis.json
+
 # Runtime storage & SQLite database
 storage/
 *.db
@@ -13,6 +28,11 @@ storage/
 *.sqlite3
 *.session
 *.session-journal
+
+# Scratch & temporary files
+scratch*
+*.tmp
+*.bak
 
 # Knowledge graph cache
 graphify-out/

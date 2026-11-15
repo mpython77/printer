@@ -142,7 +142,7 @@ class ConverterAndSlicerTests(unittest.TestCase):
             ws = wb.active
             ws.title = "Natijalar"
             ws.append(["Talaba", "Baho"])
-            ws.append(["Doston", 98])
+            ws.append(["Talaba A", 98])
             wb.save(xlsx_in)
             xlsx_out = tmp_dir / "table.pdf"
             self.assertGreaterEqual(normalize_to_pdf(xlsx_in, "table.xlsx", xlsx_out), 1)
@@ -888,8 +888,8 @@ class ApiIntegrationTests(unittest.TestCase):
                 "default_printer_name": cur_settings["default_printer_name"],
                 "agent_api_key": cur_settings.get("agent_api_key", ""),
                 "payment_enabled": True,
-                "payment_card_number": "9860 3501 2345 5728",
-                "payment_card_holder": "DIYORBEK",
+                "payment_card_number": "9860 0000 0000 0000",
+                "payment_card_holder": "TEST CARDHOLDER",
                 "payment_window_seconds": 120,
                 "telegram_bot_username": "https://t.me/HUMOcardbot",
             },
@@ -900,7 +900,7 @@ class ApiIntegrationTests(unittest.TestCase):
 
         sys_res = self.client.get("/api/system-status").json()
         self.assertTrue(sys_res["payment"]["enabled"])
-        self.assertEqual(sys_res["payment"]["card_number"], "9860 3501 2345 5728")
+        self.assertEqual(sys_res["payment"]["card_number"], "9860 0000 0000 0000")
         self.assertEqual(sys_res["payment"]["window_seconds"], 120)
 
         doc = self.client.post("/api/documents/sample").json()
@@ -981,7 +981,7 @@ class ApiIntegrationTests(unittest.TestCase):
                 f"🎉 To'ldirish\n"
                 f"➕ {formatted_amt} UZS\n"
                 f"📍 UB P2P Humo2Humo>TAS\n"
-                f"💳 HUMOCARD *5728\n"
+                f"💳 HUMOCARD *0000\n"
                 f"🕓 20:05 15.11.2026\n"
                 f"💰 99.000,00 UZS"
             )
@@ -994,7 +994,7 @@ class ApiIntegrationTests(unittest.TestCase):
             self.assertIsNotNone(parsed_tx)
             self.assertEqual(parsed_tx["tx_uid"], test_tx_uid)
             self.assertEqual(parsed_tx["amount_uzs"], expected_cost)
-            self.assertEqual(parsed_tx["card_mask"], "*5728")
+            self.assertEqual(parsed_tx["card_mask"], "*0000")
 
             mock_fetch_payload = {
                 "connected": True,

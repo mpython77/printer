@@ -19,6 +19,7 @@ QUEUE_LOCK = threading.RLock()
 
 from backend.config import (
     DB_PATH,
+    DEFAULT_ADMIN_PASSWORD,
     DEFAULT_AGENT_KEY,
     DEFAULT_PRINTER_NAME,
     PRICE_BW_DUPLEX,
@@ -186,7 +187,7 @@ def init_db(db_path: Path | None = None) -> None:
 
         defaults = {
             "admin_username": "admin",
-            "admin_password_hash": _hash_password("admin123"),
+            "admin_password_hash": _hash_password(DEFAULT_ADMIN_PASSWORD),
             "token_secret": secrets.token_hex(32),
             "price_bw_simplex": str(PRICE_BW_SIMPLEX),
             "price_bw_duplex": str(PRICE_BW_DUPLEX),
@@ -197,7 +198,7 @@ def init_db(db_path: Path | None = None) -> None:
             "warmup_seconds": str(WARMUP_SECONDS),
             "printer_mode": PRINTER_MODE,
             "default_printer_name": DEFAULT_PRINTER_NAME,
-            "agent_api_key": DEFAULT_AGENT_KEY,
+            "agent_api_key": DEFAULT_AGENT_KEY or f"tlg-{secrets.token_hex(12)}",
             "agent_last_seen": "",
             "agent_hostname": "",
             "agent_printers_json": "[]",

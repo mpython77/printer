@@ -24,7 +24,8 @@ if PRINTER_MODE not in {"DRY_RUN", "LINUX_CUPS", "REMOTE_AGENT", "WINDOWS_SPOOLE
     PRINTER_MODE = "DRY_RUN"
 
 DEFAULT_PRINTER_NAME = os.environ.get("TLG_PRINTER_NAME", "").strip()
-DEFAULT_AGENT_KEY = os.environ.get("TLG_AGENT_KEY", "tlg-pi-secret-2026").strip()
+DEFAULT_AGENT_KEY = os.environ.get("TLG_AGENT_KEY", "").strip()
+DEFAULT_ADMIN_PASSWORD = os.environ.get("TLG_ADMIN_PASSWORD", "admin123").strip() or "admin123"
 
 # Pricing per physical sheet (UZS)
 PRICE_BW_SIMPLEX = 400

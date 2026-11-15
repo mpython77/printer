@@ -375,8 +375,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--agent-key",
-        default=os.environ.get("TLG_AGENT_KEY", "tlg-pi-secret-2026"),
-        help="Admin paneldagi X-Agent-Key kaliti",
+        default=os.environ.get("TLG_AGENT_KEY", ""),
+        help="Admin paneldagi X-Agent-Key kaliti (TLG_AGENT_KEY)",
     )
     parser.add_argument(
         "--printer",
@@ -395,6 +395,13 @@ def main(argv: list[str] | None = None) -> int:
         help="Faqat bir marta tekshirib chiqish (test uchun)",
     )
     args = parser.parse_args(argv)
+
+    if not args.agent_key.strip():
+        print(
+            "[PI-AGENT] XATO: TLG_AGENT_KEY muhit o'zgaruvchisi yoki --agent-key berilmagan.",
+            file=sys.stderr,
+        )
+        return 2
 
     print(f"[PI-AGENT] Ishga tushdi -> Server: {args.server_url}")
     if args.once:

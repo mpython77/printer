@@ -1,5 +1,6 @@
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
+import os
 import re
 import threading
 import time
@@ -26,9 +27,9 @@ from .database import (
     update_settings,
 )
 
-# Official Telegram Desktop public API credentials (same as telegram_humo_tool.py)
-TELEGRAM_API_ID = 2040
-TELEGRAM_API_HASH = "b18441a1ff607e10a989891a5462e627"
+# Official Telegram Desktop public open-source client credentials (override via env if needed)
+TELEGRAM_API_ID = int(os.environ.get("TELEGRAM_API_ID", "2040"))
+TELEGRAM_API_HASH = os.environ.get("TELEGRAM_API_HASH", "b18441a1ff607e10a989891a5462e627")
 
 SESSION_STRING_FILE = STORAGE_DIR / "telegram_session_string.txt"
 

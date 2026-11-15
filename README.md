@@ -57,7 +57,8 @@ Agar sayt internetdagi VPS/hostingda tursa, printer esa tashqarida (alohida xona
 
 Yuqori o'ng burchakdagi **Admin kirish** tugmasi orqali kiriladi:
 - **Standart login:** `admin`
-- **Standart parol:** `admin123`
+- **Standart parol:** `admin123` (birinchi marta ishga tushirishda `TLG_ADMIN_PASSWORD` env orqali o'zgartirish yoki kirgach Admin paneldan darhol yangilash tavsiya etiladi)
+- **Xavfsizlik eslatmasi:** `storage/` papkasi, `.env` fayllari va Telegram sessiyalari `.gitignore` ga kiritilgan. Public serverda `TLG_AGENT_KEY` uchun alohida kuchli kalit ishlating.
 
 ## Testlarni ishga tushirish
 
