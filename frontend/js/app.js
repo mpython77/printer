@@ -276,16 +276,10 @@
 
       if (status.hardware_connected) {
         el.printerModeBadge.className = "status-pill status-pill--live";
-        if (status.printer_mode === "LINUX_CUPS") {
-          el.printerModeText.textContent = "Rejim: Raspberry Pi CUPS faol";
-        } else if (status.printer_mode === "REMOTE_AGENT") {
-          el.printerModeText.textContent = "Rejim: Raspberry Pi ko'prigi faol";
-        } else {
-          el.printerModeText.textContent = "Rejim: Jonli printer faol";
-        }
+        el.printerModeText.textContent = "Chop etish: Faol";
       } else {
         el.printerModeBadge.className = "status-pill status-pill--dryrun";
-        el.printerModeText.textContent = "Rejim: Printer ulanmagan (Test)";
+        el.printerModeText.textContent = "Printer: Test rejimi";
       }
 
       const preferred =
@@ -841,7 +835,7 @@
         ? Math.max(0, Math.ceil(job.payment_deadline_ts - Date.now() / 1000))
         : Math.max(0, parseInt(job.payment_remaining_seconds, 10) || 0);
       const pct = Math.max(0, Math.min(100, Math.round((remSec / windowSec) * 100)));
-      const cardNum = payCfg.card_number || "Karta raqami kiritilmagan (Admin panelda sozlang)";
+      const cardNum = payCfg.card_number || "Karta raqami kiritilmagan — operatorga murojaat qiling";
       const cardHolder = payCfg.card_holder || "";
       const exactAmount = String(Number(job.estimated_cost || 0));
       const mins = String(Math.floor(remSec / 60)).padStart(2, "0");
@@ -1148,7 +1142,7 @@
         }
         btn.disabled = true;
         const origLabel = btn.textContent;
-        btn.textContent = "@HUMOcardbot tekshirilmoqda...";
+        btn.textContent = "To'lov tekshirilmoqda...";
         if (errBox) errBox.classList.add("hidden");
         try {
           const updatedJob = await SmartPrintApi.verifyJobPayment(jobId, file);

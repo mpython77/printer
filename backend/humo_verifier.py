@@ -407,7 +407,7 @@ def verify_and_claim_humo_payment(
         return {
             "verified": False,
             "error_code": "TELEGRAM_NOT_CONNECTED",
-            "message": "To'lovni tekshirish uchun admin Telegram hisobi ulanmagan.",
+            "message": "Avtomatik to'lov tekshiruvi vaqtincha mavjud emas. Chekingiz saqlandi — operatorga murojaat qiling.",
         }
 
     # Allow 30s grace before order creation for minor clock skew, but never claim stale txs older than 10 minutes
@@ -430,7 +430,7 @@ def verify_and_claim_humo_payment(
             return {
                 "verified": False,
                 "error_code": "TELEGRAM_ERROR",
-                "message": fetched.get("error") or "Telegram bilan bog'lanishda xato yuz berdi.",
+                "message": "To'lov tizimi bilan bog'lanishda vaqtinchalik xatolik yuz berdi. Birozdan so'ng qayta urinib ko'ring.",
             }
 
         transactions: list[dict[str, Any]] = fetched.get("transactions") or []
@@ -465,10 +465,7 @@ def verify_and_claim_humo_payment(
                 return {
                     "verified": True,
                     "transaction": tx,
-                    "message": (
-                        f"To'lov tasdiqlandi! {tx['amount_uzs']} UZS ({tx.get('card_mask') or 'HUMO'}) "
-                        f"qabul qilindi."
-                    ),
+                    "message": f"To'lov tasdiqlandi! {tx['amount_uzs']} UZS qabul qilindi.",
                 }
 
         if attempt + 1 < attempts:
@@ -478,8 +475,8 @@ def verify_and_claim_humo_payment(
         "verified": False,
         "error_code": "PAYMENT_NOT_FOUND",
         "message": (
-            f"{bot_username} orqali {expected_amount_uzs} UZS miqdorida yangi to'lov topilmadi. "
-            "Iltimos, to'lovni to'liq summada amalga oshiring va 5 soniyadan so'ng qayta tekshiring."
+            f"{expected_amount_uzs} UZS miqdorida yangi to'lov hali tasdiqlanmadi. "
+            "Iltimos, to'lovni to'liq aniq summada amalga oshiring va 5 soniyadan so'ng qayta tekshiring."
         ),
     }
 

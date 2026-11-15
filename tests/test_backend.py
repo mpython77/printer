@@ -965,7 +965,7 @@ class ApiIntegrationTests(unittest.TestCase):
                 return_value={
                     "verified": False,
                     "error_code": "PAYMENT_NOT_FOUND",
-                    "message": "@HUMOcardbot da to'lov topilmadi.",
+                    "message": "To'lov topilmadi.",
                 },
             ):
                 fail_res = self.client.post(
@@ -1092,12 +1092,87 @@ class ApiIntegrationTests(unittest.TestCase):
                 )
 
     def test_security_hardening_anti_bypass_and_abuse_controls(self) -> None:
-        # 1) Security headers & no public admin default password leak in HTML
+        # 1) Security headers & no public admin default password / bot secret leak in HTML
         home_res = self.client.get("/")
         self.assertEqual(home_res.status_code, 200)
         self.assertEqual(home_res.headers.get("x-content-type-options"), "nosniff")
         self.assertEqual(home_res.headers.get("x-frame-options"), "DENY")
         self.assertNotIn("admin123", home_res.text)
+        self.assertNotIn("HUMOcardbot", home_res.text)
+
+        # Public system-status must not expose Telegram/bot connection details
+        sys_res = self.client.get("/api/system-status")
+        self.assertEqual(sys_res.status_code, 200)
+        sys_payment = sys_res.json().get("payment", {})
+        self.assertNotIn("bot_username", sys_payment)
+        self.assertNotIn("telegram_connected", sys_payment)
+
+        # Student-facing verify_and_claim_humo_payment messages must hide Telegram/@HUMOcardbot/raw errors
+        from backend.humo_verifier import verify_and_claim_humo_payment
+
+        with (
+            patch(
+                "backend.humo_verifier.get_telegram_status",
+                return_value={"configured": False, "connected": False, "bot_username": "@HUMOcardbot"},
+            ),
+            patch(
+                "backend.humo_verifier._fetch_bot_messages_sync",
+                return_value={"ok": False, "connected": False, "error": "Telegram ulanmagan", "messages": []},
+            ),
+        ):
+            res_disconnected = verify_and_claim_humo_payment(
+                job_id="sec-disc-1",
+                expected_amount_uzs=1500,
+                payment_created_ts=0,
+                attempts=1,
+                delay_seconds=0,
+            )
+        self.assertFalse(res_disconnected["verified"])
+        self.assertNotIn("humocardbot", res_disconnected["message"].lower())
+        self.assertNotIn("telegram", res_disconnected["message"].lower())
+
+        with (
+            patch(
+                "backend.humo_verifier.get_telegram_status",
+                return_value={"configured": True, "connected": True, "bot_username": "@HUMOcardbot"},
+            ),
+            patch(
+                "backend.humo_verifier._fetch_bot_messages_sync",
+                return_value={"ok": False, "connected": True, "error": "Telethon AuthKeyError @HUMOcardbot", "messages": []},
+            ),
+        ):
+            res_error = verify_and_claim_humo_payment(
+                job_id="sec-err-1",
+                expected_amount_uzs=1500,
+                payment_created_ts=0,
+                attempts=1,
+                delay_seconds=0,
+            )
+        self.assertFalse(res_error["verified"])
+        self.assertNotIn("humocardbot", res_error["message"].lower())
+        self.assertNotIn("telegram", res_error["message"].lower())
+        self.assertNotIn("telethon", res_error["message"].lower())
+
+        with (
+            patch(
+                "backend.humo_verifier.get_telegram_status",
+                return_value={"configured": True, "connected": True, "bot_username": "@HUMOcardbot"},
+            ),
+            patch(
+                "backend.humo_verifier._fetch_bot_messages_sync",
+                return_value={"ok": True, "connected": True, "error": None, "messages": []},
+            ),
+        ):
+            res_missing = verify_and_claim_humo_payment(
+                job_id="sec-miss-1",
+                expected_amount_uzs=1500,
+                payment_created_ts=0,
+                attempts=1,
+                delay_seconds=0,
+            )
+        self.assertFalse(res_missing["verified"])
+        self.assertNotIn("humocardbot", res_missing["message"].lower())
+        self.assertNotIn("telegram", res_missing["message"].lower())
 
         # 2) CUPS command-line / printer-name injection sanitization
         lp_cmd = build_lp_command(
@@ -1222,6 +1297,33 @@ class ApiIntegrationTests(unittest.TestCase):
                 self.client.get(f"/api/print-jobs/{job_a['id']}/pdf", headers={"X-Client-Token": stu_b}).status_code,
                 403,
             )
+
+            # Student responses must omit admin-only client_ip/receipt_url, and /api/queue/live masks other students' filenames
+            self.assertEqual(job_a.get("client_ip"), "")
+            self.assertEqual(job_a.get("receipt_url"), "")
+
+            live_a = self.client.get("/api/queue/live", headers={"X-Client-Token": stu_a}).json()
+            live_b = self.client.get("/api/queue/live", headers={"X-Client-Token": stu_b}).json()
+
+            def _find_in_live(payload: dict, target_id: str) -> dict | None:
+                items = []
+                if payload.get("active_job"):
+                    items.append(payload["active_job"])
+                items.extend(payload.get("waiting_jobs", []))
+                for it in items:
+                    if it.get("id") == target_id:
+                        return it
+                return None
+
+            item_a = _find_in_live(live_a, job_a["id"])
+            item_b = _find_in_live(live_b, job_a["id"])
+            self.assertIsNotNone(item_a)
+            self.assertIsNotNone(item_b)
+            self.assertTrue(item_a["is_mine"])
+            self.assertEqual(item_a["original_filename"], job_a["original_filename"])
+            self.assertFalse(item_b["is_mine"])
+            self.assertNotEqual(item_b["original_filename"], job_a["original_filename"])
+            self.assertEqual(item_b["original_filename"], f"Hujjat ({job_a['selected_page_count']} bet)")
 
             # 5) Queue /extend cap (+60s max above estimated/90s ceiling)
             extend_hit_cap = False

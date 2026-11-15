@@ -123,8 +123,6 @@ class PaymentConfigInfo(BaseModel):
     card_number: str = ""
     card_holder: str = ""
     window_seconds: int = 120
-    bot_username: str = "@HUMOcardbot"
-    telegram_connected: bool = False
 
 
 class TelegramStatusInfo(BaseModel):

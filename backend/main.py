@@ -432,6 +432,7 @@ def _job_to_response(
     now_ts: float | None = None,
     caller_token: str = "",
     include_secret_token: bool = False,
+    include_admin_fields: bool = False,
 ) -> PrintJobResponse:
     if active_job is None and waiting_jobs is None and job.get("queue_state") in {
         "ACTIVE_PRINTING",
@@ -444,7 +445,7 @@ def _job_to_response(
         job, active_job, waiting_jobs or [], now_ts=now_ts
     )
     dev_id = _build_device_id(job.get("client_token", ""), job.get("client_ip", ""))
-    is_mine = include_secret_token or _is_job_owner(job, caller_token)
+    is_mine = include_secret_token or include_admin_fields or _is_job_owner(job, caller_token)
     access_suffix = (
         f"?access_key={_job_access_key(job['id'], job.get('client_token', ''))}"
         if is_mine
@@ -459,10 +460,15 @@ def _job_to_response(
         )
         for seg in job.get("print_segments", [])
     ]
+    visible_filename = (
+        job["original_filename"]
+        if (is_mine or include_admin_fields)
+        else f"Hujjat ({int(job['selected_page_count'])} bet)"
+    )
     return PrintJobResponse(
         id=job["id"],
         document_id=job["document_id"],
-        original_filename=job["original_filename"],
+        original_filename=visible_filename,
         student_name=job["student_name"],
         selected_pages=job["selected_pages"],
         page_range_text=job["page_range_text"],
@@ -492,7 +498,7 @@ def _job_to_response(
         client_token=job.get("client_token", "") if is_mine else "",
         device_id=dev_id,
         device_label=job.get("device_label") or f"Qurilma ({dev_id})",
-        client_ip=job.get("client_ip", "") if include_secret_token else "",
+        client_ip=job.get("client_ip", "") if include_admin_fields else "",
         is_mine=is_mine,
         queue_state=job.get("queue_state", "COMPLETED"),
         queue_position=enrich["queue_position"],
@@ -504,13 +510,13 @@ def _job_to_response(
         completed_at=job.get("completed_at", ""),
         payment_status=job.get("payment_status", "NOT_REQUIRED"),
         payment_deadline_ts=float(job.get("payment_deadline_ts") or 0.0),
-        payment_tx_id=job.get("payment_tx_id", ""),
+        payment_tx_id=job.get("payment_tx_id", "") if (is_mine or include_admin_fields) else "",
         payment_verified_at=job.get("payment_verified_at", ""),
-        payment_note=job.get("payment_note", ""),
+        payment_note=job.get("payment_note", "") if (is_mine or include_admin_fields) else "",
         has_receipt=bool(job.get("receipt_path")),
-        receipt_filename=job.get("receipt_filename", ""),
+        receipt_filename=job.get("receipt_filename", "") if (is_mine or include_admin_fields) else "",
         receipt_uploaded_at=job.get("receipt_uploaded_at", ""),
-        receipt_url=f"/api/admin/print-jobs/{job['id']}/receipt" if job.get("receipt_path") else "",
+        receipt_url=f"/api/admin/print-jobs/{job['id']}/receipt" if (include_admin_fields and job.get("receipt_path")) else "",
     )
 
 
@@ -524,10 +530,15 @@ def _job_to_public_item(
     enrich = compute_job_queue_enrichment(job, active_job, waiting_jobs, now_ts=now_ts)
     dev_id = _build_device_id(job.get("client_token", ""), job.get("client_ip", ""))
     is_mine = _is_job_owner(job, caller_token)
+    visible_filename = (
+        job["original_filename"]
+        if is_mine
+        else f"Hujjat ({int(job['selected_page_count'])} bet)"
+    )
     return QueuePublicJobItem(
         id=job["id"],
         student_name=job.get("student_name") or "Ismsiz foydalanuvchi",
-        original_filename=job["original_filename"],
+        original_filename=visible_filename,
         page_range_text=job["page_range_text"],
         selected_page_count=int(job["selected_page_count"]),
         copies=int(job["copies"]),
@@ -691,7 +702,6 @@ def system_status() -> SystemStatusResponse:
     printer_mode = settings["printer_mode"]
     hardware_connected = printer_mode in {"LINUX_CUPS", "REMOTE_AGENT", "WINDOWS_SPOOLER"}
     mode_description = _MODE_DESCRIPTIONS.get(printer_mode, _MODE_DESCRIPTIONS["DRY_RUN"])
-    tg_status = get_telegram_status(check_remote=False)
     return SystemStatusResponse(
         printer_mode=printer_mode,
         hardware_connected=hardware_connected,
@@ -712,8 +722,6 @@ def system_status() -> SystemStatusResponse:
             card_number=settings.get("payment_card_number", ""),
             card_holder=settings.get("payment_card_holder", ""),
             window_seconds=int(settings.get("payment_window_seconds", 120)),
-            bot_username=normalize_bot_username(settings.get("telegram_bot_username") or "@HUMOcardbot"),
-            telegram_connected=bool(tg_status.get("connected")),
         ),
     )
 
@@ -1651,7 +1659,7 @@ def admin_dashboard(_admin: str = Depends(require_admin)) -> AdminDashboardRespo
     settings = get_settings()
     stats = get_admin_stats()
     printers = [PrinterInfo(**p) for p in discover_all_printers(settings.get("agent_printers"))]
-    jobs = [_job_to_response(j, include_secret_token=True) for j in list_print_jobs(limit=200)]
+    jobs = [_job_to_response(j, include_secret_token=True, include_admin_fields=True) for j in list_print_jobs(limit=200)]
     tg_status = get_telegram_status(check_remote=False)
     return AdminDashboardResponse(
         stats=AdminStats(**stats),
@@ -1800,7 +1808,7 @@ def admin_update_job(
                 },
             )
             updated, active_job, waiting_jobs = _enqueue_or_dispatch_paid_job(job_id)
-            return _job_to_response(updated, active_job=active_job, waiting_jobs=waiting_jobs, include_secret_token=True)
+            return _job_to_response(updated, active_job=active_job, waiting_jobs=waiting_jobs, include_secret_token=True, include_admin_fields=True)
 
         if payload.status == "DISPATCH_PRINTER":
             settings = get_settings()
@@ -1839,7 +1847,7 @@ def admin_update_job(
 
         assert updated is not None
         active_job, waiting_jobs = _tick_and_advance_queue()
-        return _job_to_response(updated, active_job=active_job, waiting_jobs=waiting_jobs, include_secret_token=True)
+        return _job_to_response(updated, active_job=active_job, waiting_jobs=waiting_jobs, include_secret_token=True, include_admin_fields=True)
 
 
 @app.delete("/api/admin/print-jobs/{job_id}")
@@ -1890,7 +1898,7 @@ def agent_poll_next_job(
         claimed = claim_next_agent_job()
         return {
             "ok": True,
-            "job": _job_to_response(claimed, include_secret_token=True).model_dump() if claimed else None,
+            "job": _job_to_response(claimed, include_secret_token=True, include_admin_fields=True).model_dump() if claimed else None,
         }
 
 
@@ -1913,7 +1921,7 @@ def agent_report_job_status(
         updated = update_print_job_status(job_id, payload.status, msg)
         assert updated is not None
         active_job, waiting_jobs = _tick_and_advance_queue()
-        return _job_to_response(updated, active_job=active_job, waiting_jobs=waiting_jobs, include_secret_token=True)
+        return _job_to_response(updated, active_job=active_job, waiting_jobs=waiting_jobs, include_secret_token=True, include_admin_fields=True)
 
 
 @app.middleware("http")
