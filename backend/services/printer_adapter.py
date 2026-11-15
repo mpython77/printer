@@ -13,10 +13,23 @@ from backend.config import DEFAULT_PRINTER_NAME, PRINTER_MODE
 
 try:
     import win32api
+    import win32con
+    import win32gui
     import win32print
+    import win32ui
+    from PIL import ImageWin
 except ImportError:  # pragma: no cover - non-Windows fallback
     win32api = None
+    win32con = None
+    win32gui = None
     win32print = None
+    win32ui = None
+    ImageWin = None
+
+try:
+    import pypdfium2
+except ImportError:  # pragma: no cover - optional Windows GDI renderer
+    pypdfium2 = None
 
 
 def _decode_status_flags(status_code: int) -> tuple[str, bool]:
@@ -505,6 +518,129 @@ class RemoteAgentPrinterAdapter(PrinterAdapter):
         }
 
 
+_VIRTUAL_WINDOWS_PRINTERS = {
+    "onenote (desktop)",
+    "microsoft print to pdf",
+    "microsoft xps document writer",
+    "fax",
+}
+
+
+def _resolve_working_windows_printer(preferred_name: str) -> list[str]:
+    """Order candidate Windows printers: preferred first, then online hardware printers, then offline Canon queues."""
+    candidates: list[str] = []
+    seen: set[str] = set()
+
+    def _add(name: str) -> None:
+        clean = _sanitize_printer_name(name)
+        if clean and clean.lower() not in seen:
+            seen.add(clean.lower())
+            candidates.append(clean)
+
+    if preferred_name:
+        _add(preferred_name)
+
+    installed = discover_windows_printers()
+    # Online non-virtual hardware printers next
+    for p in installed:
+        pname = str(p.get("name", "")).strip()
+        if pname and pname.lower() not in _VIRTUAL_WINDOWS_PRINTERS and not p.get("is_offline"):
+            _add(pname)
+    # Then other Canon/hardware queues even if temporarily offline/spooling
+    for p in installed:
+        pname = str(p.get("name", "")).strip()
+        if pname and pname.lower() not in _VIRTUAL_WINDOWS_PRINTERS:
+            _add(pname)
+    return candidates
+
+
+def _print_single_pdf_gdi(
+    printer_name: str,
+    pdf_path: Path,
+    title: str,
+    copies: int,
+    color_mode: str,
+    orientation: str,
+) -> None:
+    """Render each PDF page at 300 DPI via pypdfium2 and draw directly to the Windows GDI printer DC."""
+    if not (win32print and win32gui and win32ui and win32con and ImageWin and pypdfium2):
+        raise RuntimeError("Windows GDI/pypdfium2 kutubxonalari to'liq emas.")
+
+    handle = win32print.OpenPrinter(printer_name)
+    try:
+        info = win32print.GetPrinter(handle, 2)
+        dm = info.get("pDevMode")
+    finally:
+        win32print.ClosePrinter(handle)
+
+    if dm is not None:
+        dm.Color = (
+            win32con.DMCOLOR_MONOCHROME
+            if str(color_mode).strip().lower() == "bw"
+            else win32con.DMCOLOR_COLOR
+        )
+        dm.Orientation = (
+            win32con.DMORIENT_LANDSCAPE
+            if str(orientation).strip().lower() == "landscape"
+            else win32con.DMORIENT_PORTRAIT
+        )
+        dm.Copies = 1
+        dm.Fields |= win32con.DM_COLOR | win32con.DM_ORIENTATION | win32con.DM_COPIES
+
+    hdc = win32gui.CreateDC("WINSPOOL", printer_name, dm)
+    dc = win32ui.CreateDCFromHandle(hdc)
+    pdf_doc = pypdfium2.PdfDocument(str(pdf_path))
+    started_doc = False
+    try:
+        printable_w = max(1, dc.GetDeviceCaps(win32con.HORZRES))
+        printable_h = max(1, dc.GetDeviceCaps(win32con.VERTRES))
+        render_scale = 300.0 / 72.0
+        is_bw = str(color_mode).strip().lower() == "bw"
+        total_copies = max(1, int(copies or 1))
+
+        dc.StartDoc(_sanitize_job_title(title))
+        started_doc = True
+
+        page_count = len(pdf_doc)
+        for _ in range(total_copies):
+            for page_idx in range(page_count):
+                page = pdf_doc[page_idx]
+                bitmap = page.render(scale=render_scale)
+                pil_img = bitmap.to_pil()
+                if is_bw:
+                    pil_img = pil_img.convert("L").convert("RGB")
+                elif pil_img.mode != "RGB":
+                    pil_img = pil_img.convert("RGB")
+
+                img_w, img_h = pil_img.size
+                fit_scale = min(printable_w / max(1, img_w), printable_h / max(1, img_h))
+                draw_w = max(1, int(img_w * fit_scale))
+                draw_h = max(1, int(img_h * fit_scale))
+                offset_x = max(0, (printable_w - draw_w) // 2)
+                offset_y = max(0, (printable_h - draw_h) // 2)
+
+                dc.StartPage()
+                try:
+                    dib = ImageWin.Dib(pil_img)
+                    dib.draw(dc.GetHandleOutput(), (offset_x, offset_y, offset_x + draw_w, offset_y + draw_h))
+                finally:
+                    dc.EndPage()
+    finally:
+        try:
+            pdf_doc.close()
+        except Exception:
+            pass
+        if started_doc:
+            try:
+                dc.EndDoc()
+            except Exception:
+                pass
+        try:
+            dc.DeleteDC()
+        except Exception:
+            pass
+
+
 class WindowsSpoolerPrinterAdapter(PrinterAdapter):
     """Live Windows Spooler adapter (activated when TLG_PRINTER_MODE=WINDOWS_SPOOLER)."""
 
@@ -517,40 +653,80 @@ class WindowsSpoolerPrinterAdapter(PrinterAdapter):
                 "status_message": "pywin32 kutubxonasi topilmadi — Windows Spooler ishga tushmadi.",
             }
 
-        target_printer = _sanitize_printer_name(job.get("printer_name") or DEFAULT_PRINTER_NAME)
-        if not target_printer:
+        preferred = _sanitize_printer_name(job.get("printer_name") or DEFAULT_PRINTER_NAME)
+        if not preferred:
             try:
-                target_printer = _sanitize_printer_name(win32print.GetDefaultPrinter())
-            except Exception as exc:
-                return {
-                    "status": "ERROR",
-                    "status_message": f"Standart printer topilmadi: {exc}",
-                }
+                preferred = _sanitize_printer_name(win32print.GetDefaultPrinter())
+            except Exception:
+                preferred = ""
 
-        try:
-            handle = win32print.OpenPrinter(target_printer)
-            win32print.ClosePrinter(handle)
-
-            copies = max(1, int(job.get("copies", 1)))
-            for _ in range(copies):
-                win32api.ShellExecute(
-                    0,
-                    "printto",
-                    str(output_pdf_path),
-                    f'"{target_printer}"',
-                    ".",
-                    0,
-                )
-
-            return {
-                "status": "SENT_TO_PRINTER",
-                "status_message": f"Hujjat '{target_printer}' printer navbatiga muvaffaqiyatli yuborildi.",
-            }
-        except Exception as exc:
+        candidates = _resolve_working_windows_printer(preferred)
+        if not candidates:
             return {
                 "status": "ERROR",
-                "status_message": f"Printerga yuborishda xatolik: {exc}",
+                "status_message": "Windows tizimida faol printer topilmadi.",
             }
+
+        copies = max(1, int(job.get("copies", 1)))
+        orientation = str(job.get("orientation", "portrait")).strip().lower()
+        base_title = str(job.get("original_filename") or job.get("id") or "TLG-Print").strip()
+        segments = job.get("print_segments") or []
+
+        use_gdi = bool(win32gui and win32ui and win32con and ImageWin and pypdfium2)
+        last_exc: Exception | None = None
+
+        for target_printer in candidates:
+            try:
+                handle = win32print.OpenPrinter(target_printer)
+                win32print.ClosePrinter(handle)
+
+                if use_gdi:
+                    if str(job.get("color_mode", "")).strip().lower() == "mixed" and len(segments) > 1:
+                        for idx, seg in enumerate(segments, start=1):
+                            seg_file = output_pdf_path.parent / str(seg.get("pdf_filename") or "")
+                            if not seg_file.exists():
+                                seg_file = output_pdf_path
+                            seg_title = f"{base_title} [seg {idx}/{len(segments)} {seg.get('color_mode', 'bw')}]"
+                            _print_single_pdf_gdi(
+                                printer_name=target_printer,
+                                pdf_path=seg_file,
+                                title=seg_title,
+                                copies=copies,
+                                color_mode=str(seg.get("color_mode", "bw")),
+                                orientation=orientation,
+                            )
+                    else:
+                        _print_single_pdf_gdi(
+                            printer_name=target_printer,
+                            pdf_path=output_pdf_path,
+                            title=base_title,
+                            copies=copies,
+                            color_mode=str(job.get("color_mode", "bw")),
+                            orientation=orientation,
+                        )
+                else:
+                    for _ in range(copies):
+                        win32api.ShellExecute(
+                            0,
+                            "printto",
+                            str(output_pdf_path),
+                            f'"{target_printer}"',
+                            ".",
+                            0,
+                        )
+
+                return {
+                    "status": "SENT_TO_PRINTER",
+                    "status_message": f"Hujjat '{target_printer}' Windows printer navbatiga muvaffaqiyatli yuborildi.",
+                }
+            except Exception as exc:
+                last_exc = exc
+                continue
+
+        return {
+            "status": "ERROR",
+            "status_message": f"Printerga yuborishda xatolik ({candidates[0]}): {last_exc}",
+        }
 
 
 def get_active_printer_adapter(mode: str | None = None) -> PrinterAdapter:

@@ -140,13 +140,15 @@ class ApiIntegrationTests(unittest.TestCase):
         reset_security_limiter()
         self.client = TestClient(app)
         self._orig_settings = get_settings()
-        update_settings({"payment_enabled": False})
+        update_settings({"payment_enabled": False, "printer_mode": "DRY_RUN"})
 
     def tearDown(self) -> None:
         reset_security_limiter()
         update_settings(
             {
-                "payment_enabled": True,
+                "printer_mode": self._orig_settings.get("printer_mode", "DRY_RUN"),
+                "default_printer_name": self._orig_settings.get("default_printer_name", ""),
+                "payment_enabled": self._orig_settings.get("payment_enabled", True),
                 "payment_card_number": self._orig_settings.get("payment_card_number", ""),
                 "payment_card_holder": self._orig_settings.get("payment_card_holder", ""),
                 "payment_window_seconds": self._orig_settings.get("payment_window_seconds", 120),
