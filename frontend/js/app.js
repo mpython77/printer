@@ -84,8 +84,6 @@
     colorMixedBtn: document.getElementById("colorMixedBtn"),
     mixedColorBox: document.getElementById("mixedColorBox"),
     colorPagesInput: document.getElementById("colorPagesInput"),
-    duplexSimplexBtn: document.getElementById("duplexSimplexBtn"),
-    duplexDuplexBtn: document.getElementById("duplexDuplexBtn"),
     orientPortraitBtn: document.getElementById("orientPortraitBtn"),
     orientLandscapeBtn: document.getElementById("orientLandscapeBtn"),
     pagesPerSheetSelect: document.getElementById("pagesPerSheetSelect"),
@@ -944,7 +942,7 @@
         </div>
         <div class="spec-box">
           <span>Sozlamalar</span>
-          <strong>${job.copies} nusxa • ${escapeHtml(colorLabel)} • ${job.duplex === "duplex" ? "2 tomonlama" : "1 tomonlama"}</strong>
+          <strong>${job.copies} nusxa • ${escapeHtml(colorLabel)}${job.duplex === "duplex" ? " • 2 tomonlama" : ""}</strong>
         </div>
         <div class="spec-box">
           <span>Sarflanadigan qog'oz</span>
@@ -1568,7 +1566,7 @@
               <span class="tag-pill">Qurilma: ${escapeHtml(job.device_label || job.device_id || "Noma'lum")} (${escapeHtml(job.client_ip || "local")})</span>
               <span class="tag-pill">🖨️ Printer: ${escapeHtml(job.printer_name || job.printer_mode)}</span>
               <span class="tag-pill">Betlar: ${escapeHtml(job.page_range_text)} (${job.selected_page_count} bet)</span>
-              <span class="tag-pill">${job.copies} nusxa • ${escapeHtml(jobColorLabel)} • ${job.duplex === "duplex" ? "2 tomonlama" : "1 tomonlama"} • ${job.pages_per_sheet}x</span>
+              <span class="tag-pill">${job.copies} nusxa • ${escapeHtml(jobColorLabel)}${job.duplex === "duplex" ? " • 2 tomonlama" : ""} • ${job.pages_per_sheet}x</span>
               <span class="tag-pill">${job.physical_sheets} varaq</span>
               <span class="tag-pill">Vaqt: ${escapeHtml(formatDuration(job.estimated_seconds))}</span>
               <span class="tag-pill">${formatMoney(job.estimated_cost)}</span>
@@ -2022,19 +2020,8 @@
       });
     }
 
-    // Duplex
-    el.duplexSimplexBtn.addEventListener("click", () => {
-      state.duplex = "simplex";
-      el.duplexSimplexBtn.classList.add("is-active");
-      el.duplexDuplexBtn.classList.remove("is-active");
-      updateMetricsSummary();
-    });
-    el.duplexDuplexBtn.addEventListener("click", () => {
-      state.duplex = "duplex";
-      el.duplexDuplexBtn.classList.add("is-active");
-      el.duplexSimplexBtn.classList.remove("is-active");
-      updateMetricsSummary();
-    });
+    // Default print side is always single-sided ("simplex")
+    state.duplex = "simplex";
 
     // Orientation
     el.orientPortraitBtn.addEventListener("click", () => {
