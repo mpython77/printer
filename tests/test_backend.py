@@ -20,7 +20,7 @@ from pypdf import PdfReader
 from backend.config import SAMPLES_DIR
 from backend.database import get_connection, get_settings, update_settings
 from backend.humo_verifier import parse_humo_topup_message
-from backend.main import app
+from backend.main import app, reset_security_limiter
 from backend.services.converter import ensure_sample_pdf, normalize_to_pdf
 from backend.services.pdf_processor import (
     calculate_print_metrics,
@@ -137,11 +137,13 @@ class ConverterAndSlicerTests(unittest.TestCase):
 
 class ApiIntegrationTests(unittest.TestCase):
     def setUp(self) -> None:
+        reset_security_limiter()
         self.client = TestClient(app)
         self._orig_settings = get_settings()
         update_settings({"payment_enabled": False})
 
     def tearDown(self) -> None:
+        reset_security_limiter()
         update_settings(
             {
                 "payment_enabled": True,
@@ -970,6 +972,188 @@ class ApiIntegrationTests(unittest.TestCase):
                     "DELETE FROM used_payment_transactions WHERE tx_uid = ?",
                     (test_tx_uid,),
                 )
+
+    def test_security_hardening_anti_bypass_and_abuse_controls(self) -> None:
+        # 1) Security headers & no public admin default password leak in HTML
+        home_res = self.client.get("/")
+        self.assertEqual(home_res.status_code, 200)
+        self.assertEqual(home_res.headers.get("x-content-type-options"), "nosniff")
+        self.assertEqual(home_res.headers.get("x-frame-options"), "DENY")
+        self.assertNotIn("admin123", home_res.text)
+
+        # 2) CUPS command-line / printer-name injection sanitization
+        lp_cmd = build_lp_command(
+            '-d "EvilPrinter;rm"',
+            {"copies": 1, "original_filename": '-o proxy\n"bad.pdf', "paper_size": "EVIL_OPT"},
+            Path("/tmp/safe.pdf"),
+        )
+        self.assertNotIn("EVIL_OPT", " ".join(lp_cmd))
+        self.assertIn("media=A4", lp_cmd)
+        self.assertFalse(lp_cmd[lp_cmd.index("-d") + 1].startswith("-"))
+        self.assertFalse(lp_cmd[lp_cmd.index("-t") + 1].startswith("-"))
+
+        pi_cmd = build_cups_lp_command(
+            '--device="bad"',
+            {"copies": 1, "original_filename": "--evil.pdf", "paper_size": "bad;opt"},
+            Path("/tmp/safe.pdf"),
+        )
+        self.assertIn("media=A4", pi_cmd)
+        self.assertFalse(pi_cmd[pi_cmd.index("-t") + 1].startswith("-"))
+
+        # 3) Brute-force login protection (5 failures -> 6th returns 429) & token invalidation on password change
+        for _ in range(5):
+            bad_login = self.client.post(
+                "/api/admin/login", json={"username": "admin", "password": "wrong_password"}
+            )
+            self.assertEqual(bad_login.status_code, 401)
+        locked_res = self.client.post(
+            "/api/admin/login", json={"username": "admin", "password": "admin123"}
+        )
+        self.assertEqual(locked_res.status_code, 429)
+
+        reset_security_limiter()
+        login_res = self.client.post(
+            "/api/admin/login", json={"username": "admin", "password": "admin123"}
+        )
+        self.assertEqual(login_res.status_code, 200)
+        token_old = login_res.json()["token"]
+        headers_old = {"Authorization": f"Bearer {token_old}"}
+
+        # Rotate credentials -> token_old must become 401 immediately
+        upd_cred = self.client.put(
+            "/api/admin/credentials",
+            headers=headers_old,
+            json={
+                "new_username": "admin",
+                "current_password": "admin123",
+                "new_password": "NewStrongPass!99",
+            },
+        )
+        self.assertEqual(upd_cred.status_code, 200)
+        token_new = upd_cred.json()["token"]
+        headers_new = {"Authorization": f"Bearer {token_new}"}
+        self.assertEqual(self.client.get("/api/admin/dashboard", headers=headers_old).status_code, 401)
+        self.assertEqual(self.client.get("/api/admin/dashboard", headers=headers_new).status_code, 200)
+
+        # Restore default password and get clean headers for teardown cleanup
+        restore_cred = self.client.put(
+            "/api/admin/credentials",
+            headers=headers_new,
+            json={
+                "new_username": "admin",
+                "current_password": "NewStrongPass!99",
+                "new_password": "admin123",
+            },
+        )
+        self.assertEqual(restore_cred.status_code, 200)
+        admin_headers = {"Authorization": f"Bearer {restore_cred.json()['token']}"}
+
+        update_settings({"payment_enabled": True})
+        doc = self.client.post("/api/documents/sample").json()
+        stu_a = f"stu_sec_a_{uuid.uuid4().hex[:6]}"
+        stu_b = f"stu_sec_b_{uuid.uuid4().hex[:6]}"
+        created_ids: list[str] = []
+
+        try:
+            # 4) Unpaid PDF lock + Cross-student isolation + Magic-byte spoofed receipt rejection
+            res_a = self.client.post(
+                "/api/print-jobs",
+                headers={"X-Client-Token": stu_a},
+                json={
+                    "document_id": doc["id"],
+                    "selected_pages": [1, 2],
+                    "copies": 1,
+                    "color_mode": "bw",
+                    "duplex": "simplex",
+                    "printer_name": '-o malicious_printer "hack"',
+                    "student_name": "Sec Test A",
+                    "client_token": stu_a,
+                },
+            )
+            self.assertEqual(res_a.status_code, 200, res_a.text)
+            job_a = res_a.json()
+            created_ids.append(job_a["id"])
+            self.assertNotIn("malicious_printer", job_a["printer_name"])
+            self.assertIn("access_key=", job_a["pdf_url"])
+
+            # Unpaid PDF blocked for student (even with access_key), allowed for Admin
+            self.assertEqual(self.client.get(job_a["pdf_url"]).status_code, 403)
+            self.assertEqual(
+                self.client.get(f"/api/print-jobs/{job_a['id']}/pdf", headers=admin_headers).status_code,
+                200,
+            )
+
+            # Spoofed script disguised as PNG receipt must be rejected with 400
+            spoof_res = self.client.post(
+                f"/api/print-jobs/{job_a['id']}/verify-payment",
+                headers={"X-Client-Token": stu_a},
+                data={"client_token": stu_a},
+                files={"receipt": ("evil.png", b"<script>alert(1)</script>", "image/png")},
+            )
+            self.assertEqual(spoof_res.status_code, 400)
+
+            # Admin approves job_a -> Student A (signed URL) gets 200, Student B without key gets 403
+            app_res = self.client.patch(
+                f"/api/admin/print-jobs/{job_a['id']}",
+                headers=admin_headers,
+                json={"status": "APPROVE_PAYMENT"},
+            )
+            self.assertEqual(app_res.status_code, 200)
+            self.assertEqual(self.client.get(job_a["pdf_url"]).status_code, 200)
+            self.assertEqual(
+                self.client.get(f"/api/print-jobs/{job_a['id']}/pdf", headers={"X-Client-Token": stu_b}).status_code,
+                403,
+            )
+
+            # 5) Queue /extend cap (+60s max above estimated/90s ceiling)
+            extend_hit_cap = False
+            for _ in range(10):
+                ext_res = self.client.post(
+                    f"/api/print-jobs/{job_a['id']}/extend",
+                    headers={"X-Client-Token": stu_a},
+                    json={"client_token": stu_a, "extra_seconds": 15},
+                )
+                if ext_res.status_code == 400:
+                    extend_hit_cap = True
+                    break
+            self.assertTrue(extend_hit_cap, "Expected /extend to reject infinite queue holding")
+
+            # 6) Per-student unfinished job flood limit (3 unfinished OK, 4th -> 429)
+            flood_tok = f"stu_flood_{uuid.uuid4().hex[:6]}"
+            for idx in range(3):
+                r = self.client.post(
+                    "/api/print-jobs",
+                    headers={"X-Client-Token": flood_tok},
+                    json={
+                        "document_id": doc["id"],
+                        "selected_pages": [1],
+                        "copies": 1,
+                        "color_mode": "bw",
+                        "duplex": "simplex",
+                        "student_name": f"Flood {idx}",
+                        "client_token": flood_tok,
+                    },
+                )
+                self.assertEqual(r.status_code, 200, r.text)
+                created_ids.append(r.json()["id"])
+
+            r4 = self.client.post(
+                "/api/print-jobs",
+                headers={"X-Client-Token": flood_tok},
+                json={
+                    "document_id": doc["id"],
+                    "selected_pages": [1],
+                    "copies": 1,
+                    "color_mode": "bw",
+                    "duplex": "simplex",
+                    "student_name": "Flood 4",
+                    "client_token": flood_tok,
+                },
+            )
+            self.assertEqual(r4.status_code, 429)
+        finally:
+            for jid in created_ids:
+                self.client.delete(f"/api/admin/print-jobs/{jid}", headers=admin_headers)
 
 
 if __name__ == "__main__":

@@ -355,8 +355,13 @@ def update_admin_credentials(
 
     now = _utc_now_iso()
     new_hash = _hash_password(new_password)
+    new_secret = secrets.token_hex(32)
     with get_connection(db_path) as conn:
-        for key, value in (("admin_username", clean_user), ("admin_password_hash", new_hash)):
+        for key, value in (
+            ("admin_username", clean_user),
+            ("admin_password_hash", new_hash),
+            ("token_secret", new_secret),
+        ):
             conn.execute(
                 """
                 INSERT INTO system_settings (key, value, updated_at)
@@ -559,6 +564,26 @@ def get_print_job(job_id: str, db_path: Path | None = None) -> dict[str, Any] | 
             "SELECT * FROM print_jobs WHERE id = ?", (job_id,)
         ).fetchone()
     return _row_to_job(row) if row else None
+
+
+def count_unfinished_jobs_for_token(
+    client_token: str,
+    db_path: Path | None = None,
+) -> int:
+    """Count jobs belonging to client_token that are currently awaiting payment or in queue."""
+    clean = (client_token or "").strip()
+    if not clean:
+        return 0
+    with get_connection(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT COUNT(*) AS cnt FROM print_jobs
+            WHERE client_token = ?
+              AND queue_state IN ('AWAITING_PAYMENT', 'WAITING_IN_QUEUE', 'ACTIVE_PRINTING', 'AWAITING_CONFIRMATION')
+            """,
+            (clean,),
+        ).fetchone()
+    return int(row["cnt"] if row else 0)
 
 
 def get_active_queue_job(db_path: Path | None = None) -> dict[str, Any] | None:

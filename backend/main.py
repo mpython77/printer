@@ -2,21 +2,28 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import hmac
+import io
 import json
+import mimetypes
+import re
 import secrets
 import shutil
+import threading
 import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import Body, Depends, FastAPI, File, Header, HTTPException, Request, UploadFile
+from fastapi import Body, Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from PIL import Image
+from pypdf import PdfReader
 
 from backend.config import (
     ALLOWED_EXTENSIONS,
@@ -33,6 +40,7 @@ from backend.database import (
     claim_next_agent_job,
     clear_all_print_jobs,
     compute_job_queue_enrichment,
+    count_unfinished_jobs_for_token,
     create_print_job,
     delete_print_job,
     get_active_queue_job,
@@ -53,10 +61,6 @@ from backend.database import (
     update_settings,
     verify_admin_credentials,
 )
-import asyncio
-from fastapi import Form
-from fastapi.responses import FileResponse
-import mimetypes
 from backend.humo_verifier import (
     admin_disconnect_telegram,
     admin_send_telegram_code,
@@ -123,6 +127,80 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+_LOGIN_LOCK = threading.Lock()
+_LOGIN_FAILURES: dict[str, list[float]] = {}
+_LOGIN_WINDOW_SECONDS = 300
+_LOGIN_MAX_FAILURES = 5
+
+
+def reset_security_limiter() -> None:
+    """Clear tracked failed admin login attempts (used in unit tests)."""
+    with _LOGIN_LOCK:
+        _LOGIN_FAILURES.clear()
+
+
+def _extract_client_ip(request: Request) -> str:
+    forwarded = request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+    if forwarded:
+        return forwarded[:64]
+    if request.client and request.client.host:
+        return str(request.client.host)[:64]
+    return "127.0.0.1"
+
+
+def _check_login_rate_limit(client_ip: str) -> None:
+    now = time.time()
+    cutoff = now - _LOGIN_WINDOW_SECONDS
+    with _LOGIN_LOCK:
+        attempts = [t for t in _LOGIN_FAILURES.get(client_ip, []) if t >= cutoff]
+        if attempts:
+            _LOGIN_FAILURES[client_ip] = attempts
+        else:
+            _LOGIN_FAILURES.pop(client_ip, None)
+        if len(attempts) >= _LOGIN_MAX_FAILURES:
+            raise HTTPException(
+                status_code=429,
+                detail="Juda ko'p noto'g'ri urinishlar. Iltimos, 5 daqiqadan so'ng qayta urinib ko'ring.",
+            )
+
+
+def _record_login_failure(client_ip: str) -> None:
+    now = time.time()
+    cutoff = now - _LOGIN_WINDOW_SECONDS
+    with _LOGIN_LOCK:
+        attempts = [t for t in _LOGIN_FAILURES.get(client_ip, []) if t >= cutoff]
+        attempts.append(now)
+        _LOGIN_FAILURES[client_ip] = attempts
+
+
+def _clear_login_failures(client_ip: str) -> None:
+    with _LOGIN_LOCK:
+        _LOGIN_FAILURES.pop(client_ip, None)
+
+
+def _sanitize_filename(filename: str | None, fallback: str = "hujjat.pdf") -> str:
+    """Strip path traversal, quotes, control chars, and leading dashes from uploaded filenames."""
+    base = Path((filename or "").replace("\\", "/")).name
+    clean = re.sub(r'[\x00-\x1f"\\<>|:*?]+', "_", base).strip()
+    clean = clean.lstrip("-.").strip()
+    if not clean:
+        clean = fallback
+    if len(clean) > 120:
+        stem = Path(clean).stem[:90]
+        suffix = Path(clean).suffix[:20]
+        clean = f"{stem}{suffix}" or fallback
+    return clean
+
+
+@app.middleware("http")
+async def _security_headers_middleware(request: Request, call_next):
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "same-origin")
+    return response
 
 
 def _issue_admin_token(username: str) -> str:
@@ -234,6 +312,83 @@ def _is_job_owner(job: dict, caller_token: str) -> bool:
     return bool(expected and caller and hmac.compare_digest(expected, caller))
 
 
+def _job_access_key(job_id: str, client_token: str) -> str:
+    """Derive a signed short access key tying job PDF downloads to the owner's session."""
+    secret = get_token_secret().encode("utf-8")
+    msg = f"pdf:{job_id}:{(client_token or '').strip()}".encode("utf-8")
+    return hmac.new(secret, msg, hashlib.sha256).hexdigest()[:24]
+
+
+def _is_valid_admin_auth(authorization: str) -> bool:
+    if not authorization.startswith("Bearer "):
+        return False
+    token = authorization.removeprefix("Bearer ").strip()
+    if not token:
+        return False
+    try:
+        _verify_admin_token(token)
+        return True
+    except HTTPException:
+        return False
+
+
+def _is_valid_agent_auth(x_agent_key: str) -> bool:
+    expected = get_settings().get("agent_api_key", "").strip()
+    provided = (x_agent_key or "").strip()
+    return bool(expected and provided and hmac.compare_digest(provided, expected))
+
+
+def _authorize_job_pdf_access(
+    job: dict,
+    access_key: str = "",
+    x_client_token: str = "",
+    client_token: str = "",
+    authorization: str = "",
+    x_agent_key: str = "",
+) -> None:
+    """Enforce owner/admin/agent access control and block student PDF downloads before payment."""
+    if _is_valid_admin_auth(authorization) or _is_valid_agent_auth(x_agent_key):
+        return
+
+    caller_tok = (x_client_token or client_token or "").strip()
+    expected_key = _job_access_key(job["id"], job.get("client_token", ""))
+    key_ok = bool(access_key and hmac.compare_digest(access_key.strip(), expected_key))
+    owner_ok = _is_job_owner(job, caller_tok)
+    if not (key_ok or owner_ok):
+        raise HTTPException(
+            status_code=403,
+            detail="Boshqa foydalanuvchining chop etish faylini ko'rish taqiqlanadi.",
+        )
+
+    if job.get("queue_state") == "AWAITING_PAYMENT":
+        raise HTTPException(
+            status_code=403,
+            detail="To'lov tasdiqlanmaguncha tayyor PDF faylni yuklab olish mumkin emas.",
+        )
+
+
+def _validate_receipt_file_bytes(content: bytes, ext: str) -> None:
+    """Validate uploaded receipt magic bytes and structure so spoofed scripts are rejected."""
+    try:
+        if ext == ".pdf":
+            if not content.startswith(b"%PDF-"):
+                raise ValueError("Invalid PDF signature")
+            reader = PdfReader(io.BytesIO(content))
+            if len(reader.pages) < 1:
+                raise ValueError("Empty PDF")
+            return
+        with Image.open(io.BytesIO(content)) as img:
+            img.verify()
+        with Image.open(io.BytesIO(content)) as img2:
+            if (img2.format or "").upper() not in {"JPEG", "PNG", "WEBP"}:
+                raise ValueError("Unsupported image format")
+    except Exception as exc:
+        raise HTTPException(
+            status_code=400,
+            detail="Chek fayli shikastlangan yoki soxta formatda. Haqiqiy rasm (JPG/PNG/WEBP) yoki PDF yuklang.",
+        ) from exc
+
+
 def _job_to_response(
     job: dict,
     active_job: dict | None = None,
@@ -254,6 +409,20 @@ def _job_to_response(
     )
     dev_id = _build_device_id(job.get("client_token", ""), job.get("client_ip", ""))
     is_mine = include_secret_token or _is_job_owner(job, caller_token)
+    access_suffix = (
+        f"?access_key={_job_access_key(job['id'], job.get('client_token', ''))}"
+        if is_mine
+        else ""
+    )
+    signed_segments = [
+        PrintSegmentInfo(
+            **{
+                **seg,
+                "pdf_url": f"/api/print-jobs/{job['id']}/segments/{seg['segment_index']}/pdf{access_suffix}",
+            }
+        )
+        for seg in job.get("print_segments", [])
+    ]
     return PrintJobResponse(
         id=job["id"],
         document_id=job["document_id"],
@@ -268,7 +437,7 @@ def _job_to_response(
         color_pages=job.get("color_pages", []),
         bw_sheets=int(job.get("bw_sheets", 0) or 0),
         color_sheets=int(job.get("color_sheets", 0) or 0),
-        print_segments=[PrintSegmentInfo(**seg) for seg in job.get("print_segments", [])],
+        print_segments=signed_segments,
         duplex=job["duplex"],
         orientation=job["orientation"],
         pages_per_sheet=job["pages_per_sheet"],
@@ -281,13 +450,13 @@ def _job_to_response(
         printer_mode=job["printer_mode"],
         status=job["status"],
         status_message=job["status_message"],
-        pdf_url=f"/api/print-jobs/{job['id']}/pdf",
+        pdf_url=f"/api/print-jobs/{job['id']}/pdf{access_suffix}",
         original_pdf_url=f"/api/documents/{job['document_id']}/pdf",
         created_at=job["created_at"],
         client_token=job.get("client_token", "") if is_mine else "",
         device_id=dev_id,
         device_label=job.get("device_label") or f"Qurilma ({dev_id})",
-        client_ip=job.get("client_ip", ""),
+        client_ip=job.get("client_ip", "") if include_secret_token else "",
         is_mine=is_mine,
         queue_state=job.get("queue_state", "COMPLETED"),
         queue_position=enrich["queue_position"],
@@ -511,7 +680,7 @@ def system_status() -> SystemStatusResponse:
 
 @app.post("/api/documents/upload", response_model=DocumentResponse)
 async def upload_document(file: UploadFile = File(...)) -> DocumentResponse:
-    original_filename = file.filename or "hujjat.pdf"
+    original_filename = _sanitize_filename(file.filename, fallback="hujjat.pdf")
     ext = Path(original_filename).suffix.lower()
     if ext not in ALLOWED_EXTENSIONS:
         raise HTTPException(
@@ -693,11 +862,12 @@ def submit_print_job(
     ]
 
     effective_token = (payload.client_token or x_client_token or "").strip() or f"stu_{secrets.token_hex(10)}"
-    client_ip = (
-        request.headers.get("x-forwarded-for", "").split(",")[0].strip()
-        or (request.client.host if request.client else "")
-        or "127.0.0.1"
-    )
+    if count_unfinished_jobs_for_token(effective_token) >= 3:
+        raise HTTPException(
+            status_code=429,
+            detail="Sizda allaqachon 3 ta yakunlanmagan buyurtma mavjud. Yangi buyurtma berishdan oldin ularni yakunlang yoki bekor qiling.",
+        )
+    client_ip = _extract_client_ip(request)
     user_agent = request.headers.get("user-agent", "")
     dev_id = _build_device_id(effective_token, client_ip, user_agent)
     dev_label = _detect_device_label(user_agent, payload.device_label, dev_id)
@@ -745,10 +915,18 @@ def submit_print_job(
             if adapter.mode_name == "DRY_RUN"
             else "Standart Printer"
         )
+        requested_printer = payload.printer_name.strip()
+        allowed_printers = {
+            str(p.get("name", "")).strip()
+            for p in discover_all_printers(live_settings.get("agent_printers"))
+            if p.get("name")
+        }
+        if live_settings.get("default_printer_name"):
+            allowed_printers.add(str(live_settings["default_printer_name"]).strip())
         target_printer = (
-            payload.printer_name.strip()
-            or live_settings["default_printer_name"]
-            or default_fallback
+            requested_printer
+            if requested_printer and requested_printer in allowed_printers
+            else (live_settings["default_printer_name"] or default_fallback)
         )
         job_stub["printer_name"] = target_printer
         job_stub["printer_mode"] = adapter.mode_name
@@ -928,8 +1106,14 @@ def extend_job_print_time(
                 detail="Faqat chop etilayotgan buyurtma vaqtini uzaytirish mumkin.",
             )
 
-        extra_sec = int(payload.extra_seconds) if payload else 15
+        extra_sec = max(5, min(30, int(payload.extra_seconds) if payload else 15))
         base_ts = max(now, float(job.get("printing_until_ts") or now))
+        max_remaining = max(90, int(job.get("estimated_seconds") or 15) + 60)
+        if (base_ts + extra_sec) - now > max_remaining:
+            raise HTTPException(
+                status_code=400,
+                detail="Qo'shimcha vaqt limiti (maksimal +60 soniya) tugagan.",
+            )
         updated = update_job_queue_fields(
             job_id,
             {
@@ -983,10 +1167,25 @@ def cancel_print_job(
 
 
 @app.get("/api/print-jobs/{job_id}/pdf")
-def serve_job_pdf(job_id: str) -> FileResponse:
+def serve_job_pdf(
+    job_id: str,
+    access_key: str = "",
+    client_token: str = "",
+    x_client_token: str = Header(default=""),
+    authorization: str = Header(default=""),
+    x_agent_key: str = Header(default=""),
+) -> FileResponse:
     job = get_print_job(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Chop etish buyurtmasi topilmadi.")
+    _authorize_job_pdf_access(
+        job,
+        access_key=access_key,
+        x_client_token=x_client_token,
+        client_token=client_token,
+        authorization=authorization,
+        x_agent_key=x_agent_key,
+    )
     pdf_path = Path(job["output_pdf_path"])
     if not pdf_path.exists():
         raise HTTPException(status_code=404, detail="Tayyorlangan PDF topilmadi.")
@@ -998,10 +1197,26 @@ def serve_job_pdf(job_id: str) -> FileResponse:
 
 
 @app.get("/api/print-jobs/{job_id}/segments/{segment_index}/pdf")
-def serve_job_segment_pdf(job_id: str, segment_index: int) -> FileResponse:
+def serve_job_segment_pdf(
+    job_id: str,
+    segment_index: int,
+    access_key: str = "",
+    client_token: str = "",
+    x_client_token: str = Header(default=""),
+    authorization: str = Header(default=""),
+    x_agent_key: str = Header(default=""),
+) -> FileResponse:
     job = get_print_job(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Chop etish buyurtmasi topilmadi.")
+    _authorize_job_pdf_access(
+        job,
+        access_key=access_key,
+        x_client_token=x_client_token,
+        client_token=client_token,
+        authorization=authorization,
+        x_agent_key=x_agent_key,
+    )
     segments = job.get("print_segments") or []
     seg = next((s for s in segments if int(s.get("segment_index", 0)) == segment_index), None)
     if not seg:
@@ -1131,7 +1346,7 @@ async def verify_job_payment(
             detail="Bu buyurtma hozir to'lov kutish holatida emas.",
         )
 
-    original_receipt_name = (receipt.filename or "chek.jpg").strip()
+    original_receipt_name = _sanitize_filename(receipt.filename, fallback="chek.jpg")
     ext = Path(original_receipt_name).suffix.lower()
     if ext not in _ALLOWED_RECEIPT_EXTENSIONS:
         raise HTTPException(
@@ -1144,6 +1359,7 @@ async def verify_job_payment(
         raise HTTPException(status_code=400, detail="Yuklangan chek fayli bo'sh.")
     if len(content) > _MAX_RECEIPT_BYTES:
         raise HTTPException(status_code=400, detail="Chek fayli hajmi 10 MB dan oshmasligi kerak.")
+    _validate_receipt_file_bytes(content, ext)
 
     job_dir = JOBS_DIR / job_id
     job_dir.mkdir(parents=True, exist_ok=True)
@@ -1250,6 +1466,11 @@ def renew_job_payment_timer(
         window_seconds = max(30, int(settings.get("payment_window_seconds", 120) or 120))
         now = time.time()
         created_ts = float(job.get("payment_created_ts") or now)
+        if now - created_ts > 900:
+            raise HTTPException(
+                status_code=400,
+                detail="To'lov vaqtini uzaytirish limiti tugagan. Iltimos, yangi buyurtma yarating.",
+            )
         updated = update_job_queue_fields(
             job_id,
             {
@@ -1278,9 +1499,13 @@ def renew_job_payment_timer(
 
 
 @app.post("/api/admin/login", response_model=AdminLoginResponse)
-def admin_login(payload: AdminLoginRequest) -> AdminLoginResponse:
+def admin_login(payload: AdminLoginRequest, request: Request) -> AdminLoginResponse:
+    client_ip = _extract_client_ip(request)
+    _check_login_rate_limit(client_ip)
     if not verify_admin_credentials(payload.username, payload.password):
+        _record_login_failure(client_ip)
         raise HTTPException(status_code=401, detail="Login yoki parol noto'g'ri.")
+    _clear_login_failures(client_ip)
     clean_user = payload.username.strip()
     token = _issue_admin_token(clean_user)
     return AdminLoginResponse(
@@ -1321,7 +1546,7 @@ def admin_get_job_receipt(
     if not receipt_file.exists():
         raise HTTPException(status_code=404, detail="Chek fayli diskda topilmadi.")
     media_type, _ = mimetypes.guess_type(str(receipt_file))
-    safe_name = (job.get("receipt_filename") or receipt_file.name).replace('"', "")
+    safe_name = _sanitize_filename(job.get("receipt_filename") or receipt_file.name, fallback="chek.png")
     return FileResponse(
         path=receipt_file,
         media_type=media_type or "application/octet-stream",
@@ -1427,7 +1652,7 @@ def admin_update_job(
                 },
             )
             updated, active_job, waiting_jobs = _enqueue_or_dispatch_paid_job(job_id)
-            return _job_to_response(updated, active_job=active_job, waiting_jobs=waiting_jobs)
+            return _job_to_response(updated, active_job=active_job, waiting_jobs=waiting_jobs, include_secret_token=True)
 
         if payload.status == "DISPATCH_PRINTER":
             settings = get_settings()
@@ -1462,7 +1687,7 @@ def admin_update_job(
 
         assert updated is not None
         active_job, waiting_jobs = _tick_and_advance_queue()
-        return _job_to_response(updated, active_job=active_job, waiting_jobs=waiting_jobs)
+        return _job_to_response(updated, active_job=active_job, waiting_jobs=waiting_jobs, include_secret_token=True)
 
 
 @app.delete("/api/admin/print-jobs/{job_id}")
@@ -1513,7 +1738,7 @@ def agent_poll_next_job(
         claimed = claim_next_agent_job()
         return {
             "ok": True,
-            "job": _job_to_response(claimed).model_dump() if claimed else None,
+            "job": _job_to_response(claimed, include_secret_token=True).model_dump() if claimed else None,
         }
 
 
@@ -1536,7 +1761,7 @@ def agent_report_job_status(
         updated = update_print_job_status(job_id, payload.status, msg)
         assert updated is not None
         active_job, waiting_jobs = _tick_and_advance_queue()
-        return _job_to_response(updated, active_job=active_job, waiting_jobs=waiting_jobs)
+        return _job_to_response(updated, active_job=active_job, waiting_jobs=waiting_jobs, include_secret_token=True)
 
 
 if FRONTEND_DIR.exists():

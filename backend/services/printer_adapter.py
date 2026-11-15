@@ -335,21 +335,40 @@ def get_cups_spooler_status(printer_name: str, document_title: str | None = None
     }
 
 
+_ALLOWED_PAPER_SIZES = {"A4", "A5", "Letter"}
+
+
+def _sanitize_printer_name(name: str | None) -> str:
+    """Strip unsafe shell/option characters from printer names while preserving valid device names."""
+    clean = re.sub(r'[\x00-\x1f"\\;|`$&<>]+', "", (name or "").strip())
+    clean = clean.lstrip("-").strip()
+    return clean[:120]
+
+
+def _sanitize_job_title(title: str | None) -> str:
+    """Sanitize print job title before passing to external printer tools."""
+    clean = re.sub(r'[\x00-\x1f"\\;|`$&<>]+', "_", (title or "").strip())
+    clean = clean.lstrip("-").strip()
+    return (clean or "TLG-Print")[:80]
+
+
 def build_lp_command(printer_name: str | None, job: dict[str, Any], output_pdf_path: Path) -> list[str]:
     """Construct CUPS `lp` CLI arguments matching print job options."""
     cmd = ["lp"]
-    clean_printer = (printer_name or "").strip()
+    clean_printer = _sanitize_printer_name(printer_name)
     if clean_printer:
         cmd.extend(["-d", clean_printer])
 
     copies = max(1, int(job.get("copies", 1)))
     cmd.extend(["-n", str(copies)])
 
-    title = str(job.get("original_filename") or job.get("document_name") or f"TLG-{job.get('id', 'job')}").strip()
+    raw_title = str(job.get("original_filename") or job.get("document_name") or f"TLG-{job.get('id', 'job')}")
+    title = _sanitize_job_title(raw_title)
     if title:
         cmd.extend(["-t", title])
 
-    paper_size = str(job.get("paper_size", "A4")).strip() or "A4"
+    raw_paper = str(job.get("paper_size", "A4")).strip()
+    paper_size = raw_paper if raw_paper in _ALLOWED_PAPER_SIZES else "A4"
     cmd.extend(["-o", f"media={paper_size}"])
 
     duplex = str(job.get("duplex", "simplex")).strip().lower()
@@ -498,10 +517,10 @@ class WindowsSpoolerPrinterAdapter(PrinterAdapter):
                 "status_message": "pywin32 kutubxonasi topilmadi — Windows Spooler ishga tushmadi.",
             }
 
-        target_printer = job.get("printer_name") or DEFAULT_PRINTER_NAME
+        target_printer = _sanitize_printer_name(job.get("printer_name") or DEFAULT_PRINTER_NAME)
         if not target_printer:
             try:
-                target_printer = win32print.GetDefaultPrinter()
+                target_printer = _sanitize_printer_name(win32print.GetDefaultPrinter())
             except Exception as exc:
                 return {
                     "status": "ERROR",

@@ -409,8 +409,10 @@ def verify_and_claim_humo_payment(
             "message": "To'lovni tekshirish uchun admin Telegram hisobi ulanmagan.",
         }
 
-    # Allow 30 seconds grace before order creation for minor clock skew
-    min_ts = max(0, int(payment_created_ts) - 30)
+    # Allow 30s grace before order creation for minor clock skew, but never claim stale txs older than 10 minutes
+    now_ts = int(time.time())
+    min_ts = max(0, int(payment_created_ts) - 30, now_ts - 600)
+    max_ts = now_ts + 120
     last_error = ""
 
     for attempt in range(max(1, attempts)):
@@ -434,7 +436,7 @@ def verify_and_claim_humo_payment(
         candidates = [
             tx
             for tx in transactions
-            if int(tx.get("msg_date_ts") or 0) >= min_ts
+            if min_ts <= int(tx.get("msg_date_ts") or 0) <= max_ts
             and int(tx.get("amount_uzs") or 0) == int(expected_amount_uzs)
         ]
         # Prefer card mask match when card_last4 is configured

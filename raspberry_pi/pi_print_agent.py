@@ -121,21 +121,30 @@ def discover_local_cups_printers() -> list[dict[str, Any]]:
     return printers
 
 
+_ALLOWED_PAPER_SIZES = {"A4", "A5", "Letter"}
+
+
+def _sanitize_arg_value(val: str | None, fallback: str = "", max_len: int = 80) -> str:
+    clean = re.sub(r'[\x00-\x1f"\\;|`$&<>]+', "", (val or "").strip()).lstrip("-").strip()
+    return (clean or fallback)[:max_len]
+
+
 def build_cups_lp_command(printer_name: str, job: dict[str, Any], pdf_path: Path) -> list[str]:
     """Build `lp` arguments for the downloaded print job PDF."""
     cmd = ["lp"]
-    target = (printer_name or "").strip()
+    target = _sanitize_arg_value(printer_name, max_len=120)
     if target:
         cmd.extend(["-d", target])
 
     copies = max(1, int(job.get("copies", 1)))
     cmd.extend(["-n", str(copies)])
 
-    title = str(job.get("original_filename") or f"TLG-{job.get('id', 'job')}").strip()
+    title = _sanitize_arg_value(str(job.get("original_filename") or f"TLG-{job.get('id', 'job')}"), fallback="TLG-Print", max_len=80)
     if title:
         cmd.extend(["-t", title])
 
-    paper_size = str(job.get("paper_size", "A4")).strip() or "A4"
+    raw_paper = str(job.get("paper_size", "A4")).strip()
+    paper_size = raw_paper if raw_paper in _ALLOWED_PAPER_SIZES else "A4"
     cmd.extend(["-o", f"media={paper_size}"])
 
     duplex = str(job.get("duplex", "simplex")).strip().lower()
