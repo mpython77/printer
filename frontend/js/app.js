@@ -206,6 +206,7 @@
 
   function escapeHtml(str) {
     return String(str || "")
+      .replace(/(?:[\u{1F300}-\u{1FAFF}\u2600-\u27BF]\uFE0F?)\s?/gu, "")
       .replace(/&/g, "&amp;")
       .replace(/</g, "&lt;")
       .replace(/>/g, "&gt;")
@@ -408,7 +409,7 @@
       head.className = "page-card-head";
       head.innerHTML = `
         <span class="page-num-badge">${pageNum}-bet</span>
-        <span class="page-select-pill">✓ Tanlangan</span>
+        <span class="page-select-pill">Tanlangan</span>
       `;
 
       const frame = document.createElement("div");
@@ -431,7 +432,7 @@
       const rotateBtn = document.createElement("button");
       rotateBtn.type = "button";
       rotateBtn.className = "card-action-btn";
-      rotateBtn.textContent = "↻ 90°";
+      rotateBtn.textContent = "90° burish";
       rotateBtn.addEventListener("click", async (e) => {
         e.stopPropagation();
         await rotatePage(pageNum);
@@ -440,7 +441,7 @@
       const colorBtn = document.createElement("button");
       colorBtn.type = "button";
       colorBtn.className = "card-action-btn card-color-btn";
-      colorBtn.textContent = "◐ Oq-qora";
+      colorBtn.textContent = "Oq-qora";
       colorBtn.title = "Shu betni rangli yoki oq-qora qilish";
       colorBtn.addEventListener("click", (e) => {
         e.stopPropagation();
@@ -503,7 +504,7 @@
       card.classList.toggle("is-selected", isSelected);
       const pill = card.querySelector(".page-select-pill");
       if (pill) {
-        pill.textContent = isSelected ? "✓ Tanlangan" : "O'tkaziladi";
+        pill.textContent = isSelected ? "Tanlangan" : "O'tkaziladi";
       }
     });
 
@@ -578,7 +579,7 @@
       const btn = card.querySelector(".card-color-btn");
       if (btn) {
         btn.classList.toggle("is-color", isColor);
-        btn.textContent = isColor ? "🎨 Rangli" : "◐ Oq-qora";
+        btn.textContent = isColor ? "Rangli" : "Oq-qora";
       }
     });
     const zoomWrap = el.zoomCanvas.parentElement;
@@ -777,7 +778,7 @@
       return `
         <div class="modal-live-banner is-done">
           <div class="modal-live-head">
-            <strong>✅ Tasdiqlandi — Chop etish yakunlandi</strong>
+            <strong>Tasdiqlandi — Chop etish yakunlandi</strong>
             <span>Navbat keyingi foydalanuvchiga o'tdi</span>
           </div>
         </div>
@@ -787,7 +788,7 @@
       return `
         <div class="modal-live-banner is-cancelled">
           <div class="modal-live-head">
-            <strong>🚫 Buyurtma bekor qilindi</strong>
+            <strong>Buyurtma bekor qilindi</strong>
           </div>
         </div>
       `;
@@ -796,7 +797,7 @@
       return `
         <div class="modal-live-banner is-waiting">
           <div class="modal-live-head">
-            <strong>🕒 Navbatda ${job.queue_position}-o'rindasiz</strong>
+            <strong>Navbatda ${job.queue_position}-o'rindasiz</strong>
             <span>Taxminiy kutish: ${escapeHtml(formatDuration(job.estimated_wait_seconds))}</span>
           </div>
           <p class="modal-live-sub">
@@ -815,17 +816,17 @@
       return `
         <div class="modal-live-banner is-confirm">
           <div class="modal-live-title">
-            🖨️ Qog'ozlaringiz printerdan chiqib bo'ldimi? Rostdan ham chiqarib oldingizmi?
+            Qog'ozlaringiz printerdan chiqib bo'ldimi? Rostdan ham chiqarib oldingizmi?
           </div>
           <p class="modal-live-sub">
             Qog'ozlarni qo'lingizga olgach tasdiqlang — shundan so'ng navbat keyingi foydalanuvchiga beriladi (${autoSec} soniyadan keyin avtomatik bo'shaydi).
           </p>
           <div class="live-confirm-actions">
             <button type="button" class="btn btn-print btn-sm" data-confirm-job-id="${escapeHtml(job.id)}">
-              ✅ Ha, chiqarib bo'ldim (Navbatni bo'shatish)
+              Ha, chiqarib bo'ldim (Navbatni bo'shatish)
             </button>
             <button type="button" class="btn btn-secondary btn-sm" data-extend-job-id="${escapeHtml(job.id)}">
-              ⏳ Hali chiqyapti (+15s)
+              Hali chiqyapti (+15s)
             </button>
           </div>
         </div>
@@ -849,7 +850,7 @@
       return `
         <div class="modal-live-banner is-payment">
           <div class="countdown-head">
-            <span>⏳ To'lov uchun ajratilgan vaqt</span>
+            <span>To'lov uchun ajratilgan vaqt</span>
             <strong id="jobPaymentCountdownText">${remSec > 0 ? `${mins}:${secs} qoldi` : "Vaqt tugadi!"}</strong>
           </div>
           <div class="countdown-bar-track">
@@ -896,10 +897,10 @@
 
           <div class="live-confirm-actions">
             <button type="button" id="verifyPaymentSubmitBtn" class="btn btn-print btn-sm" data-verify-payment-job-id="${escapeHtml(job.id)}">
-              💳 To'lov qildim va chekni tasdiqlash
+              To'lov qildim va chekni tasdiqlash
             </button>
             <button type="button" id="renewPaymentTimerBtn" class="btn btn-secondary btn-sm" data-renew-payment-job-id="${escapeHtml(job.id)}">
-              🔄 120s vaqtni yangilash
+              120s vaqtni yangilash
             </button>
             <button type="button" class="btn btn-danger-outline btn-sm" data-cancel-job-id="${escapeHtml(job.id)}">
               Bekor qilish
@@ -920,7 +921,7 @@
         </div>
         <div class="live-confirm-actions live-confirm-actions--compact">
           <button type="button" class="btn btn-primary btn-sm" data-confirm-job-id="${escapeHtml(job.id)}">
-            ✅ Qog'oz chiqib bo'ldi — Tasdiqlash
+            Qog'oz chiqib bo'ldi — Tasdiqlash
           </button>
           <button type="button" class="btn btn-ghost btn-sm" data-extend-job-id="${escapeHtml(job.id)}">
             +15s qo'shish
@@ -1146,7 +1147,7 @@
         }
         btn.disabled = true;
         const origLabel = btn.textContent;
-        btn.textContent = "🤖 @HUMOcardbot tekshirilmoqda...";
+        btn.textContent = "@HUMOcardbot tekshirilmoqda...";
         if (errBox) errBox.classList.add("hidden");
         try {
           const updatedJob = await SmartPrintApi.verifyJobPayment(jobId, file);
@@ -1233,12 +1234,12 @@
               <strong>${escapeHtml(act.student_name)}</strong>
               <span class="mine-badge ${isMine ? "" : "is-other"}">${isMine ? "Sizning qurilmangiz" : "Boshqa foydalanuvchi"}</span>
               <span class="tag-pill">${escapeHtml(act.device_label || act.device_id || "Qurilma")}</span>
-              <span class="tag-pill">🖨️ ${escapeHtml(printerLabel)}</span>
+              <span class="tag-pill">${escapeHtml(printerLabel)}</span>
               <span class="tag-pill">${act.physical_sheets} varaq</span>
               <span class="tag-pill">${escapeHtml(formatColorLabel(act))}</span>
             </div>
             <div class="live-active-file">
-              📄 ${escapeHtml(act.original_filename)} • Betlar: ${escapeHtml(act.page_range_text)} (${act.copies} nusxa)
+              ${escapeHtml(act.original_filename)} • Betlar: ${escapeHtml(act.page_range_text)} (${act.copies} nusxa)
             </div>
           </div>
           <div class="live-active-timer">
@@ -1259,15 +1260,15 @@
       if (isMine && act.queue_state === "AWAITING_CONFIRMATION") {
         el.liveConfirmPrompt.innerHTML = `
           <div class="live-confirm-text">
-            <strong>🖨️ Qog'ozlaringiz printerdan chiqib bo'ldimi? Rostdan ham chiqarib oldingizmi?</strong>
+            <strong>Qog'ozlaringiz printerdan chiqib bo'ldimi? Rostdan ham chiqarib oldingizmi?</strong>
             <span>Tasdiqlashingiz bilan navbatdagi foydalanuvchi hujjati chop etila boshlaydi.</span>
           </div>
           <div class="live-confirm-actions">
             <button type="button" class="btn btn-print btn-sm" data-confirm-job-id="${escapeHtml(act.id)}">
-              ✅ Ha, chiqarib bo'ldim (Navbatni bo'shatish)
+              Ha, chiqarib bo'ldim (Navbatni bo'shatish)
             </button>
             <button type="button" class="btn btn-secondary btn-sm" data-extend-job-id="${escapeHtml(act.id)}">
-              ⏳ Hali chiqyapti (+15s)
+              Hali chiqyapti (+15s)
             </button>
           </div>
         `;
@@ -1281,7 +1282,7 @@
           </div>
           <div class="live-confirm-actions">
             <button type="button" class="btn btn-primary btn-sm" data-confirm-job-id="${escapeHtml(act.id)}">
-              ✅ Ha, chiqarib bo'ldim
+              Ha, chiqarib bo'ldim
             </button>
             <button type="button" class="btn btn-ghost btn-sm" data-extend-job-id="${escapeHtml(act.id)}">
               +15s qo'shish
@@ -1293,7 +1294,7 @@
       } else {
         el.liveConfirmPrompt.innerHTML = `
           <div class="live-confirm-text">
-            <strong>🔒 Tasdiqlash faqat ushbu buyurtma egasiga (${escapeHtml(act.student_name)} • ${escapeHtml(act.device_label || act.device_id)}) ko'rinadi.</strong>
+            <strong>Tasdiqlash faqat ushbu buyurtma egasiga (${escapeHtml(act.student_name)} • ${escapeHtml(act.device_label || act.device_id)}) ko'rinadi.</strong>
             <span>Boshqa qurilmalar uni tasdiqlay olmaydi — chop etish yakunlangach navbat sizga avtomatik o'tadi.</span>
           </div>
         `;
@@ -1321,7 +1322,7 @@
                 <div class="live-row-info">
                   <strong>${escapeHtml(w.student_name)} ${isMine ? `<span class="mine-badge">Siz</span>` : ""}</strong>
                   <span>${escapeHtml(w.original_filename)} • ${w.physical_sheets} varaq • ${escapeHtml(formatColorLabel(w))}</span>
-                  <span>${escapeHtml(w.device_label || w.device_id)} • 🖨️ ${escapeHtml(wPrinter)}</span>
+                  <span>${escapeHtml(w.device_label || w.device_id)} • ${escapeHtml(wPrinter)}</span>
                 </div>
               </div>
               <div class="live-row-right">
@@ -1350,11 +1351,11 @@
               <div class="live-row-info">
                 <strong>${escapeHtml(r.student_name)}</strong>
                 <span>${escapeHtml(r.original_filename)} • ${r.physical_sheets} varaq</span>
-                <span>${escapeHtml(r.device_label || r.device_id)} • 🖨️ ${escapeHtml(r.printer_name || q.default_printer_name || "Printer")}</span>
+                <span>${escapeHtml(r.device_label || r.device_id)} • ${escapeHtml(r.printer_name || q.default_printer_name || "Printer")}</span>
               </div>
             </div>
             <div class="live-row-right">
-              <span class="status-tag status-tag--ok">✓ Chiqarildi</span>
+              <span class="status-tag status-tag--ok">Chiqarildi</span>
             </div>
           </div>
         `
@@ -1589,13 +1590,13 @@
               : "Oq-qora";
         const payTag =
           job.payment_status === "PAID"
-            ? `<span class="tag-pill pay-pill is-paid">💳 To'langan (${escapeHtml(job.payment_tx_id || "tasdiq")})</span>`
+            ? `<span class="tag-pill pay-pill is-paid">To'langan (${escapeHtml(job.payment_tx_id || "tasdiq")})</span>`
             : job.payment_status === "UNVERIFIED"
-              ? `<span class="tag-pill pay-pill is-unverified">⚠️ To'lov topilmadi</span>`
+              ? `<span class="tag-pill pay-pill is-unverified">To'lov topilmadi</span>`
               : job.payment_status === "AWAITING_PAYMENT"
-                ? `<span class="tag-pill pay-pill is-pending">⏳ To'lov kutilmoqda</span>`
+                ? `<span class="tag-pill pay-pill is-pending">To'lov kutilmoqda</span>`
                 : job.payment_status === "EXPIRED"
-                  ? `<span class="tag-pill pay-pill is-unverified">⌛ Vaqt tugagan</span>`
+                  ? `<span class="tag-pill pay-pill is-unverified">Vaqt tugagan</span>`
                   : "";
         const duplexTxt = job.duplex === "duplex" ? " • 2 tomonlama" : "";
         const deviceTxt = job.device_label || job.device_id || "Noma'lum";
@@ -1607,9 +1608,9 @@
               <span class="version-pill">#${escapeHtml(job.id)}</span>
             </div>
             <div class="queue-item-line">
-              <span>👤 ${escapeHtml(job.student_name || "Ko'rsatilmagan")}</span>
+              <span>O'quvchi: ${escapeHtml(job.student_name || "Ko'rsatilmagan")}</span>
               <span>${escapeHtml(deviceTxt)} (${escapeHtml(job.client_ip || "local")})</span>
-              <span>🕒 ${escapeHtml(formatDateTime(job.created_at))}</span>
+              <span>${escapeHtml(formatDateTime(job.created_at))}</span>
             </div>
             <div class="queue-item-line queue-item-line--strong">
               <span>Betlar: ${escapeHtml(job.page_range_text)} (${job.selected_page_count} bet)</span>
@@ -1619,7 +1620,7 @@
               <span class="queue-item-cost">${formatMoney(job.estimated_cost)}</span>
             </div>
             <div class="queue-item-line">
-              <span>🖨️ ${escapeHtml(job.printer_name || job.printer_mode)}</span>
+              <span>Printer: ${escapeHtml(job.printer_name || job.printer_mode)}</span>
             </div>
             ${job.payment_note ? `<div class="payment-note-line">${escapeHtml(job.payment_note)}</div>` : ""}
           </div>
@@ -1631,7 +1632,7 @@
             <div class="queue-item-actions">
               ${
                 job.queue_state === "AWAITING_PAYMENT"
-                  ? `<button type="button" class="btn btn-success btn-sm admin-approve-payment-btn" data-job-id="${escapeHtml(job.id)}">💳 To'lovni tasdiqlash</button>`
+                  ? `<button type="button" class="btn btn-success btn-sm admin-approve-payment-btn" data-job-id="${escapeHtml(job.id)}">To'lovni tasdiqlash</button>`
                   : ""
               }
               ${
@@ -1643,7 +1644,7 @@
               <a href="${job.original_pdf_url}" target="_blank" rel="noopener" class="btn btn-outline btn-sm">Asl PDF</a>
               ${
                 job.has_receipt
-                  ? `<a href="${escapeHtml(SmartPrintApi.getReceiptUrl(job.id))}" target="_blank" rel="noopener" class="btn btn-outline btn-sm">🧾 Chek</a>`
+                  ? `<a href="${escapeHtml(SmartPrintApi.getReceiptUrl(job.id))}" target="_blank" rel="noopener" class="btn btn-outline btn-sm">Chek</a>`
                   : ""
               }
               <button type="button" class="btn btn-ghost btn-sm admin-delete-btn" data-job-id="${escapeHtml(job.id)}">O'chirish</button>
@@ -1817,7 +1818,7 @@
           (tx) => `
           <div class="humo-feed-item">
             <div>
-              <strong>➕ ${formatMoney(tx.amount_uzs)}</strong>
+              <strong>+ ${formatMoney(tx.amount_uzs)}</strong>
               <span class="humo-feed-meta">${escapeHtml(tx.card_mask || "HUMO")} • ${escapeHtml(tx.humo_time || formatDateTime(tx.msg_date_iso))} • ${escapeHtml(tx.source || "")}</span>
             </div>
             <span class="status-tag ${tx.used ? "" : "status-tag--ok"}">${tx.used ? "Ishlatilgan" : "Yangi"}</span>

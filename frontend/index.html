@@ -46,7 +46,7 @@
 
         <div class="topbar-nav-group">
           <button type="button" id="backToStudioBtn" class="btn btn-secondary btn-sm hidden">
-            ← Chop etish studiyasi
+            Studiyaga qaytish
           </button>
           <button type="button" id="openAdminBtn" class="btn btn-admin btn-sm">
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -158,12 +158,12 @@
             </div>
 
             <div class="supported-formats-strip">
-              <span class="format-pill">📄 PDF</span>
-              <span class="format-pill">📝 Word (DOCX/DOC)</span>
-              <span class="format-pill">📊 PowerPoint (PPTX/PPT)</span>
-              <span class="format-pill">📈 Excel / CSV</span>
-              <span class="format-pill">🖼️ PNG / JPG / WEBP</span>
-              <span class="format-pill">📑 TXT / Markdown</span>
+              <span class="format-pill">PDF</span>
+              <span class="format-pill">Word (DOCX/DOC)</span>
+              <span class="format-pill">PowerPoint (PPTX/PPT)</span>
+              <span class="format-pill">Excel / CSV</span>
+              <span class="format-pill">PNG / JPG / WEBP</span>
+              <span class="format-pill">TXT / Markdown</span>
             </div>
 
             <div id="uploadLoader" class="upload-loader hidden">
@@ -286,7 +286,7 @@
 
                 <div class="quick-select-buttons">
                   <button type="button" class="chip-btn" id="btnSelectAll" title="Barcha betlarni tanlash">
-                    ✓ Barchasi
+                    Barchasi
                   </button>
                   <button type="button" class="chip-btn" id="btnSelectOdd" title="Faqat toq betlarni tanlash (1, 3, 5...)">
                     1,3,5 Toq
@@ -295,7 +295,7 @@
                     2,4,6 Juft
                   </button>
                   <button type="button" class="chip-btn chip-btn--danger" id="btnClearSelection" title="Tanlovni tozalash">
-                    ✕ Tozalash
+                    Tozalash
                   </button>
                 </div>
               </div>
@@ -356,7 +356,7 @@
                     autocomplete="off"
                   />
                   <span class="mixed-hint">
-                    💡 Har bir bet kartochkasidagi <strong>Rangli / Oq-qora</strong> tugmasini ham bosishingiz mumkin.
+                    Har bir bet kartochkasidagi <strong>Rangli / Oq-qora</strong> tugmasini ham bosishingiz mumkin.
                   </span>
                 </div>
               </div>
@@ -400,7 +400,7 @@
               <!-- 4. Collapsible Advanced Print Options -->
               <details class="advanced-settings-details">
                 <summary class="advanced-settings-summary">
-                  <span>⚙️ Qo'shimcha sozlamalar (yo'nalish, 1 varaqda betlar, printer)</span>
+                  <span>Qo'shimcha sozlamalar (yo'nalish, 1 varaqda betlar, printer)</span>
                   <span class="summary-chevron">▾</span>
                 </summary>
                 <div class="advanced-settings-body">
@@ -507,7 +507,7 @@
             <strong class="mobile-sticky-total" id="mobileStickyTotal">0 so'm</strong>
           </div>
           <button type="button" class="btn btn-print btn-mobile-cta" id="mobilePrintSubmitBtn">
-            🖨️ Chiqarish
+            Chiqarish
           </button>
         </div>
       </div>
@@ -522,7 +522,7 @@
         </div>
         <div class="admin-topline-actions">
           <span class="admin-user-pill">Admin: <strong id="adminCurrentUsernameLabel">admin</strong></span>
-          <button type="button" id="adminRefreshBtn" class="btn btn-secondary btn-sm">↻ Yangilash</button>
+          <button type="button" id="adminRefreshBtn" class="btn btn-secondary btn-sm">Yangilash</button>
         </div>
       </div>
 
@@ -552,23 +552,23 @@
       <div class="admin-layout">
         <nav class="admin-sidenav" aria-label="Admin bo'limlari">
           <button type="button" class="admin-nav-btn is-active" data-admin-tab="orders">
-            <span class="admin-nav-icon">📋</span>
+            <svg class="admin-nav-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 4h6l1 2h3v14H5V6h3z"/><path d="M9 12h6M9 16h6"/></svg>
             <span>Buyurtmalar</span>
           </button>
           <button type="button" class="admin-nav-btn" data-admin-tab="pricing">
-            <span class="admin-nav-icon">💰</span>
+            <svg class="admin-nav-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M14.5 9.2c-.5-.8-1.4-1.2-2.5-1.2-1.4 0-2.5.7-2.5 1.8 0 2.5 5 1.2 5 3.7 0 1.1-1.1 1.8-2.5 1.8-1.1 0-2.1-.5-2.6-1.3M12 6.5V8M12 16v1.5"/></svg>
             <span>Narxlar</span>
           </button>
           <button type="button" class="admin-nav-btn" data-admin-tab="printer">
-            <span class="admin-nav-icon">🖨️</span>
+            <svg class="admin-nav-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7 9V3h10v6"/><rect x="3" y="9" width="18" height="8" rx="2"/><rect x="7" y="14" width="10" height="7"/></svg>
             <span>Printer</span>
           </button>
           <button type="button" class="admin-nav-btn" data-admin-tab="payment">
-            <span class="admin-nav-icon">💳</span>
+            <svg class="admin-nav-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 10h18M7 15h3"/></svg>
             <span>To'lov va Telegram</span>
           </button>
           <button type="button" class="admin-nav-btn" data-admin-tab="security">
-            <span class="admin-nav-icon">🔐</span>
+            <svg class="admin-nav-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>
             <span>Xavfsizlik</span>
           </button>
         </nav>
@@ -824,7 +824,7 @@
         </div>
         <div class="zoom-header-actions">
           <button type="button" id="zoomToggleSelectBtn" class="btn btn-secondary btn-sm">Tanlash / Bekor qilish</button>
-          <button type="button" id="zoomRotateBtn" class="btn btn-secondary btn-sm">↻ 90° Aylantirish</button>
+          <button type="button" id="zoomRotateBtn" class="btn btn-secondary btn-sm">90° burish</button>
           <button type="button" id="zoomCloseBtn" class="modal-close" aria-label="Yopish">&times;</button>
         </div>
       </div>

@@ -281,19 +281,19 @@ def _detect_device_label(user_agent: str, client_hint: str = "", device_id: str 
     else:
         ua = (user_agent or "").lower()
         if "iphone" in ua:
-            os_part = "📱 iPhone"
+            os_part = "iPhone"
         elif "ipad" in ua:
-            os_part = "📱 iPad"
+            os_part = "iPad"
         elif "android" in ua:
-            os_part = "📱 Android Telefon"
+            os_part = "Android Telefon"
         elif "windows" in ua:
-            os_part = "💻 Windows Kompyuter"
+            os_part = "Windows Kompyuter"
         elif "macintosh" in ua or "mac os" in ua:
-            os_part = "💻 Mac Kompyuter"
+            os_part = "Mac Kompyuter"
         elif "linux" in ua:
-            os_part = "💻 Linux Kompyuter"
+            os_part = "Linux Kompyuter"
         else:
-            os_part = "🖥️ Qurilma"
+            os_part = "Qurilma"
 
         if "edg/" in ua:
             browser = "Edge"

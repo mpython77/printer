@@ -20,13 +20,13 @@ window.SmartPrintApi = (() => {
   function getDeviceLabel() {
     const ua = (typeof navigator !== "undefined" && navigator.userAgent) || "";
     const l = ua.toLowerCase();
-    let osPart = "🖥️ Qurilma";
-    if (l.includes("iphone")) osPart = "📱 iPhone";
-    else if (l.includes("ipad")) osPart = "📱 iPad";
-    else if (l.includes("android")) osPart = "📱 Android Telefon";
-    else if (l.includes("windows")) osPart = "💻 Windows Kompyuter";
-    else if (l.includes("macintosh") || l.includes("mac os")) osPart = "💻 Mac Kompyuter";
-    else if (l.includes("linux")) osPart = "💻 Linux Kompyuter";
+    let osPart = "Qurilma";
+    if (l.includes("iphone")) osPart = "iPhone";
+    else if (l.includes("ipad")) osPart = "iPad";
+    else if (l.includes("android")) osPart = "Android Telefon";
+    else if (l.includes("windows")) osPart = "Windows Kompyuter";
+    else if (l.includes("macintosh") || l.includes("mac os")) osPart = "Mac Kompyuter";
+    else if (l.includes("linux")) osPart = "Linux Kompyuter";
 
     let browser = "";
     if (l.includes("edg/")) browser = "Edge";
