@@ -7,8 +7,9 @@ Wants=network-online.target cups.service
 Type=simple
 User=pi
 WorkingDirectory=/home/pi/TLG_PRINTER
-Environment=TLG_PRINTER_MODE=LINUX_CUPS
+Environment=TLG_HOST=0.0.0.0
 Environment=TLG_PORT=8000
+Environment=TLG_PRINTER_MODE=LINUX_CUPS
 ExecStart=/home/pi/TLG_PRINTER/.venv/bin/python run.py
 Restart=always
 RestartSec=3

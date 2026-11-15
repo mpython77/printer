@@ -5,16 +5,20 @@ set -euo pipefail
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CURRENT_USER="${SUDO_USER:-$USER}"
 
-echo "=== [1/4] Tizim paketlari va CUPS printer drayverlari o'rnatilmoqda ==="
+echo "=== [1/4] Tizim paketlari, CUPS drayverlari va LibreOffice o'rnatilmoqda ==="
 sudo apt-get update
 sudo apt-get install -y \
   cups \
   cups-client \
   ipp-usb \
   printer-driver-gutenprint \
+  libreoffice-writer \
+  libreoffice-impress \
+  libreoffice-calc \
   python3-venv \
   python3-pip \
-  fonts-dejavu-core
+  fonts-dejavu-core \
+  fonts-liberation
 
 echo "=== [2/4] CUPS xizmati yoqilmoqda va foydalanuvchi lpadmin guruhiga qo'shilmoqda ==="
 sudo systemctl enable --now cups
