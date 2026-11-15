@@ -363,7 +363,7 @@
     updateColorFilterClass();
     updateMetricsSummary();
 
-    await PdfRenderer.loadPdf(doc.pdf_url);
+    await PdfRenderer.loadPdf(doc.pdf_url, doc.page_count);
     await PdfRenderer.renderAllThumbnails(state.pageCanvases, state.rotations);
   }
 

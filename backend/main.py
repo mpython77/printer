@@ -18,12 +18,19 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import Body, Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
+from fastapi import Body, Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from PIL import Image
 from pypdf import PdfReader
+
+try:
+    import pypdfium2
+except ImportError:  # pragma: no cover - optional only if pypdfium2 absent
+    pypdfium2 = None
+
+_PDFIUM_RENDER_LOCK = threading.Lock()
 
 from backend.config import (
     ALLOWED_EXTENSIONS,
@@ -762,7 +769,79 @@ def serve_document_pdf(doc_id: str) -> FileResponse:
     return FileResponse(
         path=pdf_path,
         media_type="application/pdf",
-        headers={"Content-Disposition": f'inline; filename="{doc["id"]}.pdf"'},
+        headers={
+            "Content-Disposition": f'inline; filename="{doc["id"]}.pdf"',
+            "Cache-Control": "no-cache",
+        },
+    )
+
+
+@app.get("/api/documents/{doc_id}/pages/{page_num}/image")
+def serve_document_page_image(
+    doc_id: str,
+    page_num: int,
+    scale: float = Query(default=2.0, ge=0.5, le=4.0),
+) -> FileResponse:
+    """Render a normalized PDF page via pypdfium2 so browser previews match physical print output 1:1."""
+    if pypdfium2 is None:
+        raise HTTPException(status_code=503, detail="Serverda pypdfium2 tasvir rendereri mavjud emas.")
+    doc = get_document(doc_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Hujjat topilmadi.")
+    pdf_path = Path(doc["normalized_pdf_path"])
+    if not pdf_path.exists():
+        raise HTTPException(status_code=404, detail="PDF fayl diskda topilmadi.")
+
+    max_pages = max(1, int(doc.get("page_count") or 1))
+    if page_num < 1 or page_num > max_pages:
+        raise HTTPException(status_code=404, detail="Ko'rsatilgan sahifa topilmadi.")
+
+    safe_doc_id = re.sub(r"[^a-zA-Z0-9_-]", "", doc["id"])
+    scale_tag = int(round(scale * 100))
+    mtime_ns = pdf_path.stat().st_mtime_ns
+    cache_dir = NORMALIZED_DIR / "page_cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    cache_path = cache_dir / f"{safe_doc_id}_p{page_num}_s{scale_tag}_{mtime_ns}.png"
+
+    with _PDFIUM_RENDER_LOCK:
+        if not cache_path.exists():
+            pdf_doc = pypdfium2.PdfDocument(str(pdf_path))
+            page = None
+            try:
+                if page_num > len(pdf_doc):
+                    raise HTTPException(status_code=404, detail="Ko'rsatilgan sahifa topilmadi.")
+                page = pdf_doc[page_num - 1]
+                w_pt, h_pt = page.get_size()
+                max_dim_pt = max(1.0, float(w_pt), float(h_pt))
+                eff_scale = min(float(scale), 3600.0 / max_dim_pt)
+                bitmap = page.render(scale=max(0.5, eff_scale))
+                try:
+                    pil_img = bitmap.to_pil()
+                    if pil_img.mode != "RGB":
+                        pil_img = pil_img.convert("RGB")
+                    tmp_path = cache_path.with_suffix(".tmp")
+                    pil_img.save(str(tmp_path), format="PNG", optimize=False)
+                    tmp_path.replace(cache_path)
+                finally:
+                    try:
+                        bitmap.close()
+                    except Exception:
+                        pass
+            finally:
+                if page is not None:
+                    try:
+                        page.close()
+                    except Exception:
+                        pass
+                try:
+                    pdf_doc.close()
+                except Exception:
+                    pass
+
+    return FileResponse(
+        path=cache_path,
+        media_type="image/png",
+        headers={"Cache-Control": "public, max-age=3600"},
     )
 
 
@@ -1762,6 +1841,15 @@ def agent_report_job_status(
         assert updated is not None
         active_job, waiting_jobs = _tick_and_advance_queue()
         return _job_to_response(updated, active_job=active_job, waiting_jobs=waiting_jobs, include_secret_token=True)
+
+
+@app.middleware("http")
+async def add_static_cache_headers(request: Request, call_next):
+    """Ensure browser refreshes static HTML/JS/CSS cleanly after updates."""
+    response = await call_next(request)
+    if request.url.path in {"/", "/index.html"} or request.url.path.startswith(("/js/", "/css/")):
+        response.headers.setdefault("Cache-Control", "no-cache")
+    return response
 
 
 if FRONTEND_DIR.exists():

@@ -1263,5 +1263,136 @@ class ApiIntegrationTests(unittest.TestCase):
                 self.client.delete(f"/api/admin/print-jobs/{jid}", headers=admin_headers)
 
 
+class DocumentLayoutAndPreviewTests(unittest.TestCase):
+    def setUp(self) -> None:
+        reset_security_limiter()
+        self.client = TestClient(app)
+
+    def test_prepare_pptx_fixes_horizontal_and_vertical_overflow(self) -> None:
+        import tempfile
+        from pathlib import Path
+        from pptx import Presentation
+        from pptx.enum.text import MSO_AUTO_SIZE
+        from pptx.util import Inches, Pt
+        from backend.services.converter import _prepare_pptx_for_export
+
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "overflow.pptx"
+            dst = Path(tmp) / "fixed.pptx"
+            prs = Presentation()
+            slide = prs.slides.add_slide(prs.slide_layouts[6])
+
+            # 1) word_wrap=False horizontal code pill overflow
+            tb1 = slide.shapes.add_textbox(Inches(0.5), Inches(1.0), Inches(2.4), Inches(0.55))
+            tf1 = tb1.text_frame
+            tf1.word_wrap = False
+            tf1.auto_size = MSO_AUTO_SIZE.TEXT_TO_FIT_SHAPE
+            p1 = tf1.paragraphs[0]
+            r1 = p1.add_run()
+            r1.text = "qiymat1 if shart else qiymat2"
+            r1.font.size = Pt(24)
+
+            # 2) SHAPE_TO_FIT_TEXT card vertical overflow
+            tb2 = slide.shapes.add_textbox(Inches(0.5), Inches(2.0), Inches(2.2), Inches(0.85))
+            tf2 = tb2.text_frame
+            tf2.word_wrap = True
+            tf2.auto_size = MSO_AUTO_SIZE.SHAPE_TO_FIT_TEXT
+            p2 = tf2.paragraphs[0]
+            r2 = p2.add_run()
+            r2.text = "Ushbu matn kichkina kartochka balandligidan oshib ketmasligi uchun avtomatik moslashtirilishi kerak."
+            r2.font.size = Pt(18)
+
+            prs.save(str(src))
+            out = _prepare_pptx_for_export(src, dst)
+            self.assertEqual(out, dst)
+
+            fixed = Presentation(str(dst))
+            sh1, sh2 = list(fixed.slides[0].shapes)[:2]
+            self.assertEqual(sh1.text_frame.auto_size, MSO_AUTO_SIZE.NONE)
+            self.assertLess(sh1.text_frame.paragraphs[0].runs[0].font.size.pt, 24.0)
+            self.assertEqual(sh2.text_frame.auto_size, MSO_AUTO_SIZE.NONE)
+            self.assertLess(sh2.text_frame.paragraphs[0].runs[0].font.size.pt, 18.0)
+
+    def test_prepare_docx_preserves_cached_pageref_without_bookmark_error(self) -> None:
+        import tempfile
+        import zipfile
+        from pathlib import Path
+        from backend.services.converter import _prepare_docx_for_export
+
+        doc_xml = b"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p>
+      <w:r><w:t>1.1. Mavzu\t</w:t></w:r>
+      <w:r><w:fldChar w:fldCharType="begin"/></w:r>
+      <w:r><w:instrText xml:space="preserve"> PAGEREF _TocMissing123 \\h </w:instrText></w:r>
+      <w:r><w:fldChar w:fldCharType="separate"/></w:r>
+      <w:r><w:t>7</w:t></w:r>
+      <w:r><w:fldChar w:fldCharType="end"/></w:r>
+    </w:p>
+    <w:p>
+      <w:fldSimple w:instr=" PAGEREF _TocMissing456 \\h "><w:r><w:t>12</w:t></w:r></w:fldSimple>
+    </w:p>
+  </w:body>
+</w:document>"""
+
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "toc.docx"
+            dst = Path(tmp) / "toc_fixed.docx"
+            with zipfile.ZipFile(src, "w") as zf:
+                zf.writestr("word/document.xml", doc_xml)
+
+            out = _prepare_docx_for_export(src, dst)
+            self.assertEqual(out, dst)
+            with zipfile.ZipFile(dst, "r") as zf:
+                sanitized = zf.read("word/document.xml").decode("utf-8")
+            self.assertIn(">7<", sanitized)
+            self.assertIn(">12<", sanitized)
+            self.assertNotIn("PAGEREF _TocMissing123", sanitized)
+            self.assertNotIn("PAGEREF _TocMissing456", sanitized)
+
+    def test_markdown_tables_and_code_blocks_render_to_pdf(self) -> None:
+        import tempfile
+        from pathlib import Path
+        from backend.services.converter import normalize_to_pdf
+
+        md_text = (
+            "# Asosiy Sarlavha\n\n"
+            "Matn ichida **qalin** va `kod` bor.\n\n"
+            "| Modul | Tavsif | Holat |\n"
+            "| --- | --- | --- |\n"
+            "| Auth | Foydalanuvchi kirishi va token tekshiruvi | Tayyor |\n"
+            "| Print | Canon G3030 chiqarish navbati | Faol |\n\n"
+            "```python\nprint('Salom SmartPrint')\n```\n"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            md_path = Path(tmp) / "sample.md"
+            pdf_path = Path(tmp) / "sample.pdf"
+            md_path.write_text(md_text, encoding="utf-8")
+            pages = normalize_to_pdf(md_path, "sample.md", pdf_path)
+            self.assertGreaterEqual(pages, 1)
+            extracted = "\n".join(p.extract_text() or "" for p in PdfReader(str(pdf_path)).pages)
+            self.assertIn("Asosiy Sarlavha", extracted)
+            self.assertIn("Modul", extracted)
+            self.assertIn("Salom SmartPrint", extracted)
+
+    def test_document_page_image_endpoint_returns_png(self) -> None:
+        from PIL import Image as PILImage
+
+        sample_res = self.client.post("/api/documents/sample")
+        self.assertEqual(sample_res.status_code, 200)
+        doc_id = sample_res.json()["id"]
+
+        img_res = self.client.get(f"/api/documents/{doc_id}/pages/1/image?scale=1.5")
+        self.assertEqual(img_res.status_code, 200, img_res.text)
+        self.assertEqual(img_res.headers["content-type"], "image/png")
+        with PILImage.open(io.BytesIO(img_res.content)) as im:
+            self.assertGreater(im.width, 100)
+            self.assertGreater(im.height, 100)
+
+        bad_res = self.client.get(f"/api/documents/{doc_id}/pages/99/image")
+        self.assertEqual(bad_res.status_code, 404)
+
+
 if __name__ == "__main__":
     unittest.main()
